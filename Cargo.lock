@@ -698,6 +698,7 @@ dependencies = [
  "anyhow",
  "ataxia_scripting",
  "ataxia_types",
+ "env_logger",
  "iced",
  "log",
  "notify-debouncer-full",
