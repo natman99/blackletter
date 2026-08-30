@@ -46,11 +46,11 @@ fn class() {
     assert_eq!(c.classes[0].healing_die_remaining, 3);
     assert_eq!(c.classes[0].health_bonus_per_level, 2);
 
-    let script = r#"
+    let script = r"
         classes[0].level = 19;
 
         classes[0].max_healing_die = 4;
-        "#;
+        ";
     let c = i.execute(script, None).unwrap();
     assert_eq!(c.classes[0].max_healing_die, 4);
     assert_eq!(c.classes[0].level.0, 19);
@@ -114,10 +114,10 @@ fn spell() {
 #[test]
 fn scores() {
     let mut i = Interface::new();
-    let script = r#"
+    let script = r"
         ability_scores.str = 14;
         ability_scores.dex = 12;
-        "#;
+        ";
     let c = i.execute(script, None).unwrap();
     assert_eq!(c.ability_scores.str.get(), 14i64);
     assert_eq!(c.ability_scores.dex.get(), 12i64);
@@ -126,7 +126,7 @@ fn scores() {
 #[test]
 fn health() {
     let mut i = Interface::new();
-    let script = r#"
+    let script = r"
         health.max = 14;
         health.current = 12;
         health.level_bonus = 2;
@@ -134,7 +134,7 @@ fn health() {
         health.set_current(11);
         health.set_level_bonus(1);
         health.bonus = 5;
-        "#;
+        ";
     let c = i.execute(script, None).unwrap();
     assert_eq!(c.health.max, 13);
     assert_eq!(c.health.current, 11);
@@ -155,10 +155,10 @@ fn race() {
 #[test]
 fn initiative() {
     let mut i = Interface::new();
-    let script = r#"
+    let script = r"
         initiative.bonus = 2;
         initiative.set_bonus(1);
-        "#;
+        ";
     let c = i.execute(script, None).unwrap();
     assert_eq!(c.initiative.bonus, 1);
 }
@@ -166,10 +166,10 @@ fn initiative() {
 #[test]
 fn armor_class() {
     let mut i = Interface::new();
-    let script = r#"
+    let script = r"
         armor_class = 12;
         armor_class += 2;
-        "#;
+        ";
     let c = i.execute(script, None).unwrap();
     assert_eq!(c.armor_class.get(), 14);
 }
@@ -227,29 +227,29 @@ fn meter() {
 #[test]
 fn saving_throws() {
     let mut i = Interface::new();
-    let script = r#"
+    let script = r"
         saving_throws.str = true;
         saving_throws.dex = true;
         saving_throws.con = true;
         saving_throws.int = true;
         saving_throws.wis = true;
         saving_throws.cha = true;
-        "#;
+        ";
     let c = i.execute(script, None).unwrap();
-    assert_eq!(c.saving_throws.str, true);
-    assert_eq!(c.saving_throws.dex, true);
-    assert_eq!(c.saving_throws.con, true);
-    assert_eq!(c.saving_throws.int, true);
-    assert_eq!(c.saving_throws.wis, true);
-    assert_eq!(c.saving_throws.cha, true);
+    assert!(c.saving_throws.str);
+    assert!(c.saving_throws.dex);
+    assert!(c.saving_throws.con);
+    assert!(c.saving_throws.int);
+    assert!(c.saving_throws.wis);
+    assert!(c.saving_throws.cha);
 }
 
 #[test]
 fn walking_speed() {
     let mut i = Interface::new();
-    let script = r#"
+    let script = r"
         walking_speed = 40;
-        "#;
+        ";
     let c = i.execute(script, None).unwrap();
     assert_eq!(c.walking_speed.0, 40);
 }
@@ -282,17 +282,17 @@ fn skills() {
 #[test]
 fn senses() {
     let mut i = Interface::new();
-    let script = r#"
+    let script = r"
         senses.darkvision = true;
         senses.tremor_sense = true;
         senses.blindsight = true;
         senses.truesight = true;
-        "#;
+        ";
     let c = i.execute(script, None).unwrap();
-    assert_eq!(c.senses.extra.dark_vision, true);
-    assert_eq!(c.senses.extra.tremor_sense, true);
-    assert_eq!(c.senses.extra.blind_sight, true);
-    assert_eq!(c.senses.extra.true_sight, true);
+    assert!(c.senses.extra.dark_vision);
+    assert!(c.senses.extra.tremor_sense);
+    assert!(c.senses.extra.blind_sight);
+    assert!(c.senses.extra.true_sight);
 }
 
 #[test]
@@ -323,15 +323,15 @@ fn interactive_roll() {
     let mut character = Character::default();
     character.ability_scores.con.base = 14;
     let s = i.interactive("2 + 2d4 + str.mod()", character).unwrap();
-    assert!(s.is_int())
+    assert!(s.is_int());
 }
 
 #[test]
 fn ability_modifier() {
     let mut i = Interface::new();
-    let script = r#"
+    let script = r"
         ability_modifier = Dex;
-        "#;
+        ";
     let c = i.execute(script, None).unwrap();
     assert_eq!(c.ability_modifier, Score::Dex);
 }
@@ -378,7 +378,7 @@ fn languages() {
         c.languages
             .languages
             .contains(&Language::Other("spanish".to_string()))
-    )
+    );
 }
 
 #[test]

@@ -1,8 +1,8 @@
-use ataxia_types::{Character, Inventory, Item, spells::Spell};
+use ataxia_types::{Character, spells::Spell};
 use iced::{
     Element, Length,
     widget::{
-        Button, Checkbox, Column, Row, button, checkbox, container, row, scrollable,
+        button, container, scrollable,
         table::{self, Table},
         text,
     },
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Message, views::basic::Pinnable};
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InventoryMessage {}
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -34,7 +34,7 @@ impl<'a> InventoryState {
                 "-".to_string()
             };
             let feature = if let Some(f) = item.feature.as_ref() {
-                let a: Vec<String> = f.effects.iter().map(|f| f.to_string()).collect();
+                let a: Vec<String> = f.effects.iter().map(std::string::ToString::to_string).collect();
                 a.join(", ")
             } else {
                 "-".to_string()

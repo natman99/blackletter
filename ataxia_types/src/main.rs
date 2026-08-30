@@ -33,4 +33,4 @@ fn main() {
 }
 
 #[cfg(not(feature = "serde"))]
-fn main() {}
+const fn main() {}

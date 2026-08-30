@@ -1,4 +1,3 @@
-use std::fs;
 
 use ataxia_types::{
     Character, Item,
@@ -6,12 +5,11 @@ use ataxia_types::{
     database::{condition::Condition as DBCondition, spell::DatabaseSpell},
     spells::Spell,
 };
-use log::{error, info};
+use log::info;
 use reqwest::Url;
 use rig::{
-    client::{AgentClientExt, AgentModelExt, CompletionClient},
+    client::{AgentModelExt, CompletionClient},
     prelude::Prompt,
-    providers::openai,
 };
 use scraper::{Html, Selector};
 
@@ -63,7 +61,7 @@ pub enum FetchError {
 }
 
 pub(crate) fn parsednd5e(s: &str) -> Result<String, FetchError> {
-    let document = Html::parse_document(&s);
+    let document = Html::parse_document(s);
 
     let selector = Selector::parse("#page-content").unwrap();
 
@@ -96,7 +94,7 @@ async fn fetch_dnd_5e(url: Url) -> Result<String, FetchError> {
 }
 
 fn dnd5e_url(spell_name: &str) -> Result<Url, url::ParseError> {
-    let s = spell_name.replace("'", "").replace(" ", "-").to_lowercase();
+    let s = spell_name.replace('\'', "").replace(' ', "-").to_lowercase();
     info!("{s}");
     let i = format!("https://dnd5e.wikidot.com/spell:{s}");
     let url = Url::parse(&i)?;
@@ -109,11 +107,7 @@ pub async fn ask_llm(
     api_key: Option<&str>,
     model: &str,
 ) -> Result<Spell, FetchError> {
-    use rig::{
-        agent::Agent,
-        client::{CompletionClient, ProviderClient},
-        completion::{AssistantContent, CompletionModel},
-    };
+    use rig::client::CompletionClient;
     let client = rig::providers::openai::Client::builder()
         .base_url(base_url)
         .api_key(api_key.unwrap_or("dummy"))
@@ -129,7 +123,7 @@ pub async fn ask_llm(
     let schema = schemars::schema_for!(Spell);
     let s = serde_json::to_string(&schema).expect("Static string");
 
-    let prompt = format!("{}\n\n{:#?}", s, spell_info);
+    let prompt = format!("{s}\n\n{spell_info:#?}");
 
     let mut counter = 0;
     let mut last = None;
@@ -144,7 +138,7 @@ pub async fn ask_llm(
             format!(
                 "Your last try failed to parse with error: {}. Fix issues and try again. \n\n{}",
                 last.unwrap(),
-                &prompt
+                prompt
             )
         };
         info!("Prompting");

@@ -41,12 +41,12 @@ pub mod library {
             .collect::<Vec<Dynamic>>()
     }
 
-    pub fn set_bonus(initiative: &mut Initiative, b: i64) {
+    pub const fn set_bonus(initiative: &mut Initiative, b: i64) {
         initiative.bonus = b;
     }
 
     // ability modifier
-    pub fn set_score(score: &mut Score, s: Score) {
+    pub const fn set_score(score: &mut Score, s: Score) {
         *score = s;
     }
 
@@ -65,15 +65,15 @@ pub mod library {
     // -- health submodule --
     pub mod health {
 
-        pub fn set_max(hp: &mut HitPoints, v: i64) {
+        pub const fn set_max(hp: &mut HitPoints, v: i64) {
             hp.max = v;
         }
 
-        pub fn set_current(hp: &mut HitPoints, v: i64) {
+        pub const fn set_current(hp: &mut HitPoints, v: i64) {
             hp.current = v;
         }
 
-        pub fn set_level_bonus(hp: &mut HitPoints, v: i64) {
+        pub const fn set_level_bonus(hp: &mut HitPoints, v: i64) {
             hp.level_bonus = v;
         }
     }
@@ -81,22 +81,22 @@ pub mod library {
     // -- meter submodule --
 
     pub mod meter {
-        use super::*;
+        use super::{ImmutableString, Meter, RestoreTime, Meters, HasSource, Source};
 
         pub fn meter(name: ImmutableString, slots: i64) -> Meter {
             Meter::new(name.to_string(), slots as u32, RestoreTime::default())
         }
 
-        pub fn short_rest(m: &mut Meter) {
+        pub const fn short_rest(m: &mut Meter) {
             m.restore.short_rest = true;
         }
 
-        pub fn long_rest(m: &mut Meter) {
+        pub const fn long_rest(m: &mut Meter) {
             m.restore.long_rest = true;
         }
 
         pub fn add(meters: &mut Meters, m: Meter) {
-            meters.meters.insert(m.name.to_string(), m);
+            meters.meters.insert(m.name.clone(), m);
         }
 
         pub fn source(m: &mut Meter, source: ImmutableString) {
@@ -109,7 +109,7 @@ pub mod library {
     pub mod class {
         use std::str::FromStr;
 
-        use super::*;
+        use super::{Class, ImmutableString, Die};
 
         pub fn set_class(class: &mut Class, s: ImmutableString) {
             class.set_class(s.as_str());
@@ -136,7 +136,7 @@ pub mod library {
     pub mod spell {
         use std::str::FromStr;
 
-        use super::*;
+        use super::{ImmutableString, HasSource, Source, Roll};
         use ataxia_types::{
             Score,
             damage::DamageType,
@@ -185,31 +185,31 @@ pub mod library {
             spell.duration = duration.to_string();
         }
 
-        pub fn concentration(spell: &mut Spell, concentration: bool) {
+        pub const fn concentration(spell: &mut Spell, concentration: bool) {
             spell.concentration = concentration;
         }
 
-        pub fn ritual(spell: &mut Spell, ritual: bool) {
+        pub const fn ritual(spell: &mut Spell, ritual: bool) {
             spell.ritual = ritual;
         }
 
-        pub fn level(spell: &mut Spell, level: i64) {
+        pub const fn level(spell: &mut Spell, level: i64) {
             spell.level = level;
         }
 
-        pub fn automatic(spell: &mut Spell) {
+        pub const fn automatic(spell: &mut Spell) {
             spell.spell_type = SpellType::Automatic;
         }
 
-        pub fn melee(spell: &mut Spell) {
+        pub const fn melee(spell: &mut Spell) {
             spell.spell_type = SpellType::Melee;
         }
 
-        pub fn ranged(spell: &mut Spell) {
+        pub const fn ranged(spell: &mut Spell) {
             spell.spell_type = SpellType::Ranged;
         }
 
-        pub fn saving(spell: &mut Spell, dc_type: Score) {
+        pub const fn saving(spell: &mut Spell, dc_type: Score) {
             spell.spell_type = SpellType::Saving {
                 dc_type,
                 success: ataxia_types::spells::Success::Half,
@@ -253,7 +253,7 @@ pub mod library {
                 let Ok(element) = DamageType::from_str(element.as_str()) else {
                     return;
                 };
-                d.damage_type = element
+                d.damage_type = element;
             }
         }
 
@@ -278,7 +278,7 @@ pub mod library {
     pub mod item {
         use ataxia_types::Score;
 
-        use super::*;
+        use super::{ImmutableString, Item, Roll, Effect, HasFeature, HasSource, Source, FromStr};
 
         #[rhai_fn(name = "item")]
         pub fn item_name_desc(name: ImmutableString, description: ImmutableString) -> Item {
@@ -320,7 +320,7 @@ pub mod library {
         }
 
         pub fn add(inventory: &mut ataxia_types::Inventory, item: Item) {
-            inventory.0.insert(item.name.to_string(), item);
+            inventory.0.insert(item.name.clone(), item);
         }
 
         pub fn desc(f: &mut Item, desc: ImmutableString) {
@@ -328,14 +328,14 @@ pub mod library {
         }
 
         pub fn description(f: &mut Item, desc: ImmutableString) {
-            f.description = desc.to_string()
+            f.description = desc.to_string();
         }
 
-        pub fn count(f: &mut Item, count: i64) {
+        pub const fn count(f: &mut Item, count: i64) {
             f.quantity = count as i32;
         }
 
-        pub fn quantity(f: &mut Item, count: i64) {
+        pub const fn quantity(f: &mut Item, count: i64) {
             f.quantity = count as i32;
         }
 
@@ -349,20 +349,20 @@ pub mod library {
 
         pub fn roll(f: &mut Item, r: ImmutableString) {
             if let Ok(r) = Roll::from_str(r.as_str()) {
-                f.roll = Some(r)
+                f.roll = Some(r);
             }
         }
 
         #[rhai_fn(set = "to_hit")]
-        pub fn to_hit(f: &mut Item, s: Score) {
-            f.to_hit = Some(s)
+        pub const fn to_hit(f: &mut Item, s: Score) {
+            f.to_hit = Some(s);
         }
     }
 
     // -- feat submodule --
 
     pub mod feat {
-        use super::*;
+        use super::{Feat, ImmutableString, HasSource, Source, Effect, HasFeature, Feature};
 
         pub fn source(f: &mut Feat, source: ImmutableString) {
             f.add_source(Source::Single(source.to_string()));
@@ -384,7 +384,7 @@ pub mod library {
 
         use ataxia_types::roll::Roll;
 
-        use super::*;
+        use super::{ImmutableString, Dynamic};
 
         pub fn roll(s: ImmutableString) -> Dynamic {
             if let Ok(r) = Roll::from_str(s.as_str()) {
@@ -404,45 +404,45 @@ pub mod library {
     // -- senses submodule --
 
     pub mod senses {
-        use super::*;
+        use super::Senses;
 
         #[rhai_fn(get = "darkvision", pure)]
-        pub fn darkvision_get(s: &mut Senses) -> bool {
+        pub const fn darkvision_get(s: &mut Senses) -> bool {
             s.extra.dark_vision
         }
 
         #[rhai_fn(set = "darkvision")]
-        pub fn darkvision_set(s: &mut Senses, v: bool) {
+        pub const fn darkvision_set(s: &mut Senses, v: bool) {
             s.extra.dark_vision = v;
         }
 
         #[rhai_fn(get = "tremor_sense", pure)]
-        pub fn tremor_sense_get(s: &mut Senses) -> bool {
+        pub const fn tremor_sense_get(s: &mut Senses) -> bool {
             s.extra.tremor_sense
         }
 
         #[rhai_fn(set = "tremor_sense")]
-        pub fn tremor_sense_set(s: &mut Senses, v: bool) {
+        pub const fn tremor_sense_set(s: &mut Senses, v: bool) {
             s.extra.tremor_sense = v;
         }
 
         #[rhai_fn(get = "blindsight", pure)]
-        pub fn blindsight_get(s: &mut Senses) -> bool {
+        pub const fn blindsight_get(s: &mut Senses) -> bool {
             s.extra.blind_sight
         }
 
         #[rhai_fn(set = "blindsight")]
-        pub fn blindsight_set(s: &mut Senses, v: bool) {
+        pub const fn blindsight_set(s: &mut Senses, v: bool) {
             s.extra.blind_sight = v;
         }
 
         #[rhai_fn(get = "truesight", pure)]
-        pub fn truesight_get(s: &mut Senses) -> bool {
+        pub const fn truesight_get(s: &mut Senses) -> bool {
             s.extra.true_sight
         }
 
         #[rhai_fn(set = "truesight")]
-        pub fn truesight_set(s: &mut Senses, v: bool) {
+        pub const fn truesight_set(s: &mut Senses, v: bool) {
             s.extra.true_sight = v;
         }
     }
@@ -450,65 +450,65 @@ pub mod library {
     // -- saving_throws submodule --
 
     pub mod saving_throws {
-        use super::*;
+        use super::SavingThrows;
 
         #[rhai_fn(get = "str", pure)]
-        pub fn str_get(st: &mut SavingThrows) -> bool {
+        pub const fn str_get(st: &mut SavingThrows) -> bool {
             st.str
         }
 
         #[rhai_fn(set = "str")]
-        pub fn str_set(st: &mut SavingThrows, v: bool) {
+        pub const fn str_set(st: &mut SavingThrows, v: bool) {
             st.str = v;
         }
 
         #[rhai_fn(get = "dex", pure)]
-        pub fn dex_get(st: &mut SavingThrows) -> bool {
+        pub const fn dex_get(st: &mut SavingThrows) -> bool {
             st.dex
         }
 
         #[rhai_fn(set = "dex")]
-        pub fn dex_set(st: &mut SavingThrows, v: bool) {
+        pub const fn dex_set(st: &mut SavingThrows, v: bool) {
             st.dex = v;
         }
 
         #[rhai_fn(get = "con", pure)]
-        pub fn con_get(st: &mut SavingThrows) -> bool {
+        pub const fn con_get(st: &mut SavingThrows) -> bool {
             st.con
         }
 
         #[rhai_fn(set = "con")]
-        pub fn con_set(st: &mut SavingThrows, v: bool) {
+        pub const fn con_set(st: &mut SavingThrows, v: bool) {
             st.con = v;
         }
 
         #[rhai_fn(get = "int", pure)]
-        pub fn int_get(st: &mut SavingThrows) -> bool {
+        pub const fn int_get(st: &mut SavingThrows) -> bool {
             st.int
         }
 
         #[rhai_fn(set = "int")]
-        pub fn int_set(st: &mut SavingThrows, v: bool) {
+        pub const fn int_set(st: &mut SavingThrows, v: bool) {
             st.int = v;
         }
 
         #[rhai_fn(get = "wis", pure)]
-        pub fn wis_get(st: &mut SavingThrows) -> bool {
+        pub const fn wis_get(st: &mut SavingThrows) -> bool {
             st.wis
         }
 
         #[rhai_fn(set = "wis")]
-        pub fn wis_set(st: &mut SavingThrows, v: bool) {
+        pub const fn wis_set(st: &mut SavingThrows, v: bool) {
             st.wis = v;
         }
 
         #[rhai_fn(get = "cha", pure)]
-        pub fn cha_get(st: &mut SavingThrows) -> bool {
+        pub const fn cha_get(st: &mut SavingThrows) -> bool {
             st.cha
         }
 
         #[rhai_fn(set = "cha")]
-        pub fn cha_set(st: &mut SavingThrows, v: bool) {
+        pub const fn cha_set(st: &mut SavingThrows, v: bool) {
             st.cha = v;
         }
     }
@@ -516,7 +516,7 @@ pub mod library {
     // -- skills submodule --
 
     pub mod skills {
-        use std::str::FromStr;
+        
 
         use ataxia_types::{Score, skills::Skill};
         use rhai::ImmutableString;
@@ -594,7 +594,7 @@ pub mod library {
         use ataxia_types::lore::{Alignment, Morality, Order};
         use rhai::ImmutableString;
 
-        use super::*;
+        
 
         #[rhai_fn(set = "morality")]
         pub fn set_morality(a: &mut Alignment, v: ImmutableString) {
@@ -635,7 +635,7 @@ pub mod library {
     }
 
     pub mod feature {
-        use ataxia_types::{feature::AbilityScoreBonus, senses::Sense, spells::Spell};
+        use ataxia_types::{feature::AbilityScoreBonus, spells::Spell};
         use rhai::ImmutableString;
 
         #[rhai_fn(name = "feature")]
@@ -644,7 +644,7 @@ pub mod library {
             match cast_into_feature(a) {
                 Ok(mut a) => {
                     let effect = Effect::AbilityScoreBonus(AbilityScoreBonus {
-                        score: score,
+                        score,
                         bonus: val as i32,
                     });
                     a.add(effect);
@@ -760,15 +760,15 @@ enum FeatureEnum {
 impl HasFeature for FeatureEnum {
     fn apply(&self, sheet: &mut ataxia_types::Character) {
         match self {
-            FeatureEnum::Item(item) => item.apply(sheet),
-            FeatureEnum::Feat(feat) => feat.apply(sheet),
+            Self::Item(item) => item.apply(sheet),
+            Self::Feat(feat) => feat.apply(sheet),
         }
     }
 
     fn add(&mut self, feature: ataxia_types::feature::Effect) {
         match self {
-            FeatureEnum::Item(item) => item.add(feature),
-            FeatureEnum::Feat(feat) => feat.add(feature),
+            Self::Item(item) => item.add(feature),
+            Self::Feat(feat) => feat.add(feature),
         }
     }
 }
@@ -776,21 +776,23 @@ impl HasFeature for FeatureEnum {
 impl HasSource for FeatureEnum {
     fn source(&self) -> Option<&ataxia_types::source::Source> {
         match self {
-            FeatureEnum::Item(item) => item.source(),
-            FeatureEnum::Feat(feat) => feat.source(),
+            Self::Item(item) => item.source(),
+            Self::Feat(feat) => feat.source(),
         }
     }
 
     fn add_source(&mut self, source: ataxia_types::source::Source) {
         match self {
-            FeatureEnum::Item(item) => item.add_source(source),
-            FeatureEnum::Feat(feat) => feat.add_source(source),
+            Self::Item(item) => item.add_source(source),
+            Self::Feat(feat) => feat.add_source(source),
         }
     }
 }
 
 fn parse_double_effect(f: ImmutableString, val: Dynamic) -> Option<Effect> {
-    let effect = match f.as_str() {
+    
+
+    match f.as_str() {
         "armor" | "armor_class" | "ac" => Some(Effect::AcBonus(val.as_int().ok()?)),
         "health_bonus" => Some(Effect::HealthBonusPerLevel(val.as_int().ok()?)),
         "initiative" | "initiative_bonus" => Some(Effect::InitiativeBonus(val.as_int().ok()?)),
@@ -810,13 +812,7 @@ fn parse_double_effect(f: ImmutableString, val: Dynamic) -> Option<Effect> {
         }
         _ => {
             let s = Sense::from_str(f.as_str()).ok();
-            if let Some(s) = s {
-                Some(Effect::Sense(s))
-            } else {
-                None
-            }
+            s.map(Effect::Sense)
         }
-    };
-
-    effect
+    }
 }

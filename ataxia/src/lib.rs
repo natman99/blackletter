@@ -18,7 +18,7 @@ use iced::{
 use log::warn;
 use notify_debouncer_full::{
     DebounceEventResult, new_debouncer,
-    notify::{EventKind, RecursiveMode, event::ModifyKind},
+    notify::{EventKind, RecursiveMode},
 };
 use rfd::FileHandle;
 use serde::{Deserialize, Serialize};
@@ -150,7 +150,7 @@ impl<'a> App {
                                 }
                             });
                             // TODO kill the notify thread and exit properly
-                            start.then(|_| std::process::exit(0))
+                            start.then(|()| std::process::exit(0))
                         } else {
                             std::process::exit(0)
                         }
@@ -417,7 +417,7 @@ impl<'a> App {
 
         let c = match state.view {
             View::Basic => self.basic_state.view(sheet),
-            View::Inventory => self.inventory_state.view(&sheet),
+            View::Inventory => self.inventory_state.view(sheet),
             View::Spells => todo!(),
         };
         let c = column![mode_switcher(self, window_id), c].spacing(8);
@@ -520,6 +520,21 @@ fn get_state_path(f: impl AsRef<Path>) -> String {
     format!("{}.state.json", f.as_ref().display())
 }
 
+fn mode_switcher(app: &'_ App, id: Id) -> Container<'_, Message> {
+    let b1 = button("Main").on_press_maybe(if app.windows[&id].view == View::Basic {
+        None
+    } else {
+        Some(Message::ViewChanged(View::Basic, id))
+    });
+    let b2 = button("Inventory").on_press_maybe(if app.windows[&id].view == View::Inventory {
+        None
+    } else {
+        Some(Message::ViewChanged(View::Inventory, id))
+    });
+
+    container(row![b1, b2].spacing(8)).padding(12)
+}
+
 #[cfg(test)]
 mod tests {
     use super::UiState;
@@ -544,21 +559,6 @@ mod tests {
         assert!(!state.basic.reaction);
         assert!(state.basic.pinned.is_empty());
     }
-}
-
-fn mode_switcher(app: &'_ App, id: Id) -> Container<'_, Message> {
-    let b1 = button("Main").on_press_maybe(if app.windows[&id].view == View::Basic {
-        None
-    } else {
-        Some(Message::ViewChanged(View::Basic, id))
-    });
-    let b2 = button("Inventory").on_press_maybe(if app.windows[&id].view == View::Inventory {
-        None
-    } else {
-        Some(Message::ViewChanged(View::Inventory, id))
-    });
-
-    container(row![b1, b2].spacing(8)).padding(12)
 }
 
 // fn mode_style(theme: &Theme, status: iced::widget::button::Status) -> iced::widget::button::Style {

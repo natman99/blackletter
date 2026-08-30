@@ -48,6 +48,7 @@ impl Default for Interface {
 }
 
 impl Interface {
+    #[must_use]
     pub fn new() -> Self {
         let mut engine = Engine::new();
         let result = Arc::new(Mutex::new(String::new()));
@@ -60,7 +61,7 @@ impl Interface {
 
         register_engine_functions(&mut engine);
 
-        Interface {
+        Self {
             engine,
             spells: Default::default(),
             conditions: Default::default(),
@@ -83,7 +84,7 @@ impl Interface {
 
         if let Some(char) = character {
             c.health.current = char.health.current;
-            for (k, i) in char.meters.meters.iter() {
+            for (k, i) in &char.meters.meters {
                 if let Some(meter) = c.meters.meters.get_mut(k) {
                     meter.spent = i.spent;
                 }
@@ -151,7 +152,7 @@ impl Interface {
 
         let script = RE.replace_all(script, " roll(\"$1\").roll()");
 
-        println!("{}", script);
+        println!("{script}");
 
         let mut scope = Scope::new();
         self.inject_known_scope(&mut scope, character);

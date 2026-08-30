@@ -4,7 +4,7 @@ use ataxia_types::{Character, Item, Score, skills::Skill, spells::Spell};
 use iced::{
     Alignment, Element, Length, Task,
     widget::{
-        Column, Container, Row, Rule, Text, button, checkbox, column, container, row, rule, text,
+        Column, Container, Row, Text, button, checkbox, column, container, row, rule, text,
         text_input,
     },
 };
@@ -375,7 +375,7 @@ fn pinned_widget<'a>(state: &'a BasicState, sheet: &'a Character) -> Container<'
 
     for i in &state.pinned {
         match i {
-            Pinnable::Spell(spell) => todo!(),
+            Pinnable::Spell(_spell) => todo!(),
             Pinnable::Item(item) => {
                 let roll = if let Some(f) = item.roll.as_ref() {
                     f.to_string()
