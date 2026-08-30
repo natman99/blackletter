@@ -21,6 +21,7 @@ use notify_debouncer_full::{
     notify::{EventKind, RecursiveMode, event::ModifyKind},
 };
 use rfd::FileHandle;
+use serde::{Deserialize, Serialize};
 use tokio::{fs, io, task};
 
 use crate::views::{BasicMessage, BasicState, InventoryState};
@@ -37,6 +38,7 @@ pub enum Message {
     FileLoaded {
         main: Arc<io::Result<String>>,
         backup: Option<Arc<io::Result<String>>>,
+        state: Arc<io::Result<String>>,
     },
     FileModified,
     WatcherCreated(tokio::sync::mpsc::Sender<PathBuf>),
@@ -73,6 +75,17 @@ pub enum Mode {
     #[default]
     Rhai,
     Json,
+}
+
+/// The serializable ui state, saved next to the sheet so it can be restored.
+///
+/// Window-specific state is not included because `iced::window::Id`
+/// is not serializable.
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UiState {
+    pub basic: BasicState,
+    pub inventory: InventoryState,
 }
 
 #[derive(Debug)]
@@ -113,18 +126,29 @@ impl<'a> App {
                     if self.windows.is_empty() {
                         println!("Closing window");
                         if let Some(ref s) = self.sheet {
-                            let c = self
+                            let path = self
                                 .sheet_path
                                 .as_ref()
                                 .expect("Always a path when a character exists");
-                            let c = get_backup_path(&c);
+                            let c = get_backup_path(path);
+                            let state_path = get_state_path(path);
                             let contents =
                                 serde_json::to_string_pretty(s).expect("Should never fail");
+                            let state_contents =
+                                serde_json::to_string_pretty(&self.snapshot_ui_state())
+                                    .expect("Should never fail");
                             println!("Saving file");
 
                             self.sheet_path = None;
 
-                            let start = Task::future(async move { fs::write(c, contents).await });
+                            let start = Task::future(async move {
+                                if let Err(e) = fs::write(c, contents).await {
+                                    log::error!("Failed to write backup file: {e}");
+                                }
+                                if let Err(e) = fs::write(state_path, state_contents).await {
+                                    log::error!("Failed to write ui state file: {e}");
+                                }
+                            });
                             // TODO kill the notify thread and exit properly
                             start.then(|_| std::process::exit(0))
                         } else {
@@ -166,10 +190,15 @@ impl<'a> App {
                             let f = f.path().to_owned();
                             self.sheet_path = Some(f.clone());
 
-                            let t = fs::read_to_string(f);
-                            Task::perform(t, |f| Message::FileLoaded {
-                                main: Arc::new(f),
+                            let t = async move {
+                                let main = fs::read_to_string(f.clone()).await;
+                                let state = fs::read_to_string(get_state_path(f)).await;
+                                (main, state)
+                            };
+                            Task::perform(t, |(main, state)| Message::FileLoaded {
+                                main: Arc::new(main),
                                 backup: None,
+                                state: Arc::new(state),
                             })
                         }
                         Some(_) => {
@@ -177,15 +206,18 @@ impl<'a> App {
                             self.sheet_path = Some(f.clone());
 
                             let t2 = fs::read_to_string(get_backup_path(f.as_path()));
+                            let t3 = fs::read_to_string(get_state_path(f.as_path()));
                             let t = fs::read_to_string(f);
                             let t = async move {
                                 let t = t.await;
                                 let t2 = t2.await;
-                                (t, t2)
+                                let t3 = t3.await;
+                                (t, t2, t3)
                             };
-                            Task::perform(t, |(main, backup)| Message::FileLoaded {
+                            Task::perform(t, |(main, backup, state)| Message::FileLoaded {
                                 main: Arc::new(main),
                                 backup: Some(Arc::new(backup)),
+                                state: Arc::new(state),
                             })
                         }
                         None => {
@@ -198,9 +230,13 @@ impl<'a> App {
                     Task::none()
                 }
             }
-            Message::FileLoaded { main, backup } => {
+            Message::FileLoaded {
+                main,
+                backup,
+                state,
+            } => {
                 println!("File loaded");
-                match &*main {
+                let loaded = match &*main {
                     Ok(f) => match self.sheet_mode {
                         Mode::Rhai => {
                             let second = if let Some(backup) = backup
@@ -214,34 +250,53 @@ impl<'a> App {
                                 self.sheet.clone()
                             };
                             match self.rhai_interface.execute(f, second) {
-                                Ok(sheet) => self.sheet = Some(sheet),
-                                Err(e) => println!("Rhai failed: {e:?}"),
+                                Ok(sheet) => {
+                                    self.sheet = Some(sheet);
+                                    true
+                                }
+                                Err(e) => {
+                                    println!("Rhai failed: {e:?}");
+                                    false
+                                }
                             }
-                            Task::none()
                         }
-                        Mode::Json => {
-                            match serde_json::from_str::<Character>(f) {
-                                Ok(c) => self.sheet = Some(c),
-                                Err(e) => println!("Json failed: {e:?}"),
+                        Mode::Json => match serde_json::from_str::<Character>(f) {
+                            Ok(c) => {
+                                self.sheet = Some(c);
+                                true
                             }
-                            Task::none()
-                        }
+                            Err(e) => {
+                                println!("Json failed: {e:?}");
+                                false
+                            }
+                        },
                     },
                     Err(e) => {
                         println!("{e:?}");
-                        Task::none()
+                        false
                     }
+                };
+                if loaded {
+                    self.load_ui_state(state);
                 }
+                Task::none()
             }
             Message::FileModified => {
                 println!("Reloading file");
 
                 if let Some(e) = &self.sheet_path {
                     let e = e.to_owned();
+                    let t2 = fs::read_to_string(get_state_path(e.as_path()));
                     let t = fs::read_to_string(e);
-                    Task::perform(t, |f| Message::FileLoaded {
-                        main: Arc::new(f),
+                    let t = async move {
+                        let main = t.await;
+                        let state = t2.await;
+                        (main, state)
+                    };
+                    Task::perform(t, |(main, state)| Message::FileLoaded {
+                        main: Arc::new(main),
                         backup: None,
+                        state: Arc::new(state),
                     })
                 } else {
                     Task::none()
@@ -284,24 +339,30 @@ impl<'a> App {
                 let Some(ref sheet) = self.sheet else {
                     return Task::none();
                 };
-                let r = serde_json::to_string_pretty(&sheet);
-                if let Ok(r) = r {
-                    let path = get_backup_path(
-                        self.sheet_path
-                            .as_ref()
-                            .expect("We always have this when we have a character")
-                            .clone(),
-                    );
-                    let task = async move {
-                        log::info!("Saving file");
-                        let _ = fs::write(path, r).await;
-                    };
-                    return Task::future(task).discard();
-                } else {
+                let Ok(r) = serde_json::to_string_pretty(&sheet) else {
                     warn!("Json tostring failed");
-                }
-
-                Task::none()
+                    return Task::none();
+                };
+                let Ok(s) = serde_json::to_string_pretty(&self.snapshot_ui_state()) else {
+                    warn!("Ui state tostring failed");
+                    return Task::none();
+                };
+                let path = self
+                    .sheet_path
+                    .as_ref()
+                    .expect("We always have this when we have a character")
+                    .clone();
+                let path = get_backup_path(&path);
+                let state_path = get_state_path(&path);
+                let task = async move {
+                    if let Err(e) = fs::write(path, r).await {
+                        log::error!("Failed to write backup file: {e}");
+                    }
+                    if let Err(e) = fs::write(state_path, s).await {
+                        log::error!("Failed to write ui state file: {e}");
+                    }
+                };
+                Task::future(task).discard()
             }
             Message::ViewChanged(view, id) => {
                 if let Some(w) = self.windows.get_mut(&id) {
@@ -312,6 +373,34 @@ impl<'a> App {
                 }
             }
         }
+    }
+
+    fn snapshot_ui_state(&self) -> UiState {
+        UiState {
+            basic: self.basic_state.clone(),
+            inventory: self.inventory_state.clone(),
+        }
+    }
+
+    /// Applies the ui state loaded alongside a sheet.
+    ///
+    /// A missing state file (e.g. the sheet has never been saved by this
+    /// app) resets the ui state so stale state from another sheet is not
+    /// shown.
+    fn load_ui_state(&mut self, state: Arc<io::Result<String>>) {
+        let ui_state = match Arc::try_unwrap(state).expect("There should only ever be one copy") {
+            Ok(contents) => match serde_json::from_str::<UiState>(&contents) {
+                Ok(ui_state) => ui_state,
+                Err(e) => {
+                    warn!("Failed to load ui state: {e}");
+                    UiState::default()
+                }
+            },
+            // Expected on first load of a sheet, so no warning.
+            Err(_) => UiState::default(),
+        };
+        self.basic_state = ui_state.basic;
+        self.inventory_state = ui_state.inventory;
     }
 
     pub fn view(&'_ self, window_id: Id) -> Element<'_, Message> {
@@ -425,6 +514,36 @@ fn create_file_watcher() -> impl Stream<Item = Message> {
 }
 fn get_backup_path(f: impl AsRef<Path>) -> String {
     format!("{}.json", f.as_ref().display())
+}
+
+fn get_state_path(f: impl AsRef<Path>) -> String {
+    format!("{}.state.json", f.as_ref().display())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::UiState;
+
+    #[test]
+    fn ui_state_roundtrip() {
+        let mut state = UiState::default();
+        state.basic.reaction = true;
+        state.basic.hp_input = "3".to_string();
+
+        let json = serde_json::to_string(&state).expect("should serialize");
+        let back: UiState = serde_json::from_str(&json).expect("should deserialize");
+
+        assert!(back.basic.reaction);
+        assert_eq!(back.basic.hp_input, "3");
+        assert!(back.basic.pinned.is_empty());
+    }
+
+    #[test]
+    fn ui_state_missing_fields_default() {
+        let state: UiState = serde_json::from_str("{}").expect("should deserialize");
+        assert!(!state.basic.reaction);
+        assert!(state.basic.pinned.is_empty());
+    }
 }
 
 fn mode_switcher(app: &'_ App, id: Id) -> Container<'_, Message> {

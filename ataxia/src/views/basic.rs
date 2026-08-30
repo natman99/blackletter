@@ -8,16 +8,18 @@ use iced::{
         text_input,
     },
 };
+use serde::{Deserialize, Serialize};
 
 use crate::{Message, MeterMessage};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Pinnable {
     Spell(Spell),
     Item(Item),
 }
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct BasicState {
     pub hp_input: String,
     pub reaction: bool,
@@ -404,4 +406,21 @@ fn pinned_widget<'a>(state: &'a BasicState, sheet: &'a Character) -> Container<'
         }
     }
     Container::new(cols).padding(8).height(Length::Shrink)
+}
+
+#[cfg(test)]
+mod tests {
+    use ataxia_types::Item;
+
+    use super::Pinnable;
+
+    #[test]
+    fn pinnable_item_roundtrip() {
+        let mut item = Item::default();
+        item.roll = Some("2d6 + 2".parse().expect("should parse"));
+        let pinnable = Pinnable::Item(item);
+        let json = serde_json::to_string(&pinnable).expect("should serialize");
+        let back: Pinnable = serde_json::from_str(&json).expect("should deserialize");
+        assert_eq!(back, pinnable);
+    }
 }
