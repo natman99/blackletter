@@ -3,3 +3,4 @@ target/
 ataxia_agent/.fastembed_cache
 ataxia_agent/.env
 .github/
+.*.txt
