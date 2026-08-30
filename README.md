@@ -24,6 +24,9 @@ Integration with (rhai)[https://rhai.rs/] for building characters in a scripting
 - Create a character from rhai script
 - Script against a sheet in real time to calculate feature interactions and rolls.
 
+- [ ] Add rhai docs
+  - For now, examples can be found in src/tests.rs
+
 ```rust
 name = "Bob";
 classes[0].set_level(2);
@@ -53,16 +56,25 @@ The GUI culmination of all the projects.
 - [ ] Spells + Meters
 - [ x ] Integration with [ataxia_scripting](#ataxia-scripting)
 
+## Platform support
+- Should work on most Linux distributions
+  - Install rust toolchain
+  - Follow errors for missing system packages
+- Windows 
+  - Install rust toolchain
+- Mac Os
+  - Probably works, but untested
 
 ## Building
-
+1. Clone this repo.
+2. This.
 This project uses info from the D&D Srd. Clone it before building.
 ```bash
 git clone https://github.com/5e-bits/5e-database
 cargo build
 ```
-
-To install ataxia ui to path
+Or this.
+To install Ataxia ui to path (what you probably want)
 ```bash
 git clone https://github.com/5e-bits/5e-database
 cargo install --path ataxia --locked
