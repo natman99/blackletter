@@ -7,13 +7,15 @@ use iced::{
         text,
     },
 };
+use serde::{Deserialize, Serialize};
 
 use crate::{Message, views::basic::Pinnable};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct InventoryMessage {}
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct InventoryState {
     popup: Option<Spell>,
 }
