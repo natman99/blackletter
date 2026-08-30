@@ -21,3 +21,7 @@ rhai = { workspace = true, optional = true }
 serde = ["dep:serde", "dep:serde_json"]
 schema = ["dep:schemars"]
 rhai = ["dep:rhai"]
+
+[lints.clippy]
+pedantic = { level = "deny" }
+nursery = { level = "deny" }
