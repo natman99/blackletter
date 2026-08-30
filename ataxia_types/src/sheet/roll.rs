@@ -30,16 +30,43 @@ pub enum RollParseError {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
-#[cfg_attr(feature = "serde", serde(default), serde(try_from = "String"))]
 #[cfg_attr(feature = "rhai", derive(CustomType))]
 /// A dice roll. Can contain multiple dice.
+///
+/// Serialized as its display string, e.g. `"2d6 + 2"`. Deserializes from
+/// that string or the legacy struct form `{"dice": [...], "bonus": n}`.
 pub struct Roll {
     /// Array of dice to roll.
     pub dice: Vec<Die>,
     /// A bonus to add after the dice have been rolled.
     pub bonus: i32,
+}
+
+#[cfg(feature = "serde")]
+impl Serialize for Roll {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+#[cfg(feature = "serde")]
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RollRepr {
+    Fields { dice: Vec<Die>, bonus: i32 },
+    Display(String),
+}
+
+#[cfg(feature = "serde")]
+impl<'de> Deserialize<'de> for Roll {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let repr = RollRepr::deserialize(deserializer)?;
+        match repr {
+            RollRepr::Fields { dice, bonus } => Ok(Self { dice, bonus }),
+            RollRepr::Display(s) => Roll::try_from(s).map_err(serde::de::Error::custom),
+        }
+    }
 }
 
 impl Default for Roll {
@@ -209,6 +236,7 @@ pub enum Die {
     #[default]
     D20,
     #[strum(serialize = "D100")]
+    #[cfg_attr(feature = "serde", serde(alias = "100"))]
     Percentile,
 }
 
@@ -238,7 +266,7 @@ impl Die {
             Die::D10 => 10,
             Die::D12 => 12,
             Die::D20 => 20,
-            Die::Percentile => 10,
+            Die::Percentile => 100,
         }
     }
 
@@ -285,5 +313,70 @@ mod tests {
     #[test]
     fn only_bonus() {
         Roll::from_str("20").unwrap();
+    }
+
+    #[test]
+    fn percentile_max() {
+        assert_eq!(Die::Percentile.max(), 100);
+    }
+
+    #[test]
+    fn percentile_display_roundtrip() {
+        let roll = Roll::from_str("1d100").unwrap();
+        assert_eq!(roll.dice, vec![Die::Percentile]);
+        assert_eq!(roll.to_string(), "1d100 ");
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod serde_tests {
+    use super::*;
+
+    #[test]
+    fn roll_serializes_as_string() {
+        let roll = Roll::from_str("2d6 + 2").unwrap();
+        let json = serde_json::to_string(&roll).unwrap();
+        assert_eq!(json, r#""2d6 + 2""#);
+    }
+
+    #[test]
+    fn roll_roundtrip() {
+        let roll = Roll::from_str("2d6 + 2").unwrap();
+        let json = serde_json::to_string(&roll).unwrap();
+        let back: Roll = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, roll);
+    }
+
+    #[test]
+    fn roll_legacy_struct_form() {
+        let json = r#"{"dice": ["D6", "D6"], "bonus": 2}"#;
+        let roll: Roll = serde_json::from_str(json).unwrap();
+        assert_eq!(roll, Roll::from_str("2d6 + 2").unwrap());
+    }
+
+    #[test]
+    fn roll_invalid_string_errors() {
+        let json = r#""mod""#;
+        assert!(serde_json::from_str::<Roll>(json).is_err());
+    }
+
+    #[test]
+    fn die_percentile_serializes_as_variant_name() {
+        let json = serde_json::to_string(&Die::Percentile).unwrap();
+        assert_eq!(json, r#""Percentile""#);
+    }
+
+    #[test]
+    fn die_percentile_parses_from_100_alias() {
+        let die: Die = serde_json::from_str(r#""100""#).unwrap();
+        assert_eq!(die, Die::Percentile);
+    }
+
+    #[test]
+    fn roll_percentile_roundtrip() {
+        let roll = Roll::from_str("1d100").unwrap();
+        let json = serde_json::to_string(&roll).unwrap();
+        let back: Roll = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, roll);
     }
 }
