@@ -222,6 +222,12 @@ impl Display for Roll {
     }
 }
 
+impl Into<String> for Roll {
+    fn into(self) -> String {
+        self.to_string()
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Default, EnumString)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
