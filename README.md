@@ -1,11 +1,11 @@
-Ataxia
+Blackletter
 ===
 
-Ataxia is an implementation of Dungeons and Dragons 5e mechanics in Rust :rocket:. 
+Blackletter is an implementation of Dungeons and Dragons 5e mechanics in Rust :rocket:. 
 
 ## Project Layout
 
-### Ataxia Types
+### Blackletter Types
 The home of the core logic.
 Should be usable for single classed builds.
 
@@ -13,16 +13,19 @@ Statically typed using Rust's type system. Nearly all mechanics covered and cust
 
 - Types implement serde, JsonSchema, and Rhai bindings under the respective `serde`, `schema` and `rhai` features.
 
-### Ataxia Cli
+### Blackletter Cli
 Tui for viewing character sheets.
-Abandoned in favor of [Ataxia](#Ataxia).
-- To be repurposed into a cli for AI agents to write Ataxia scripts and types.
+Abandoned in favor of [Blackletter](#Blackletter).
+- To be repurposed into a cli for AI agents to write Blackletter scripts and types.
 
-### Ataxia Scripting
+### Blackletter Scripting
 Integration with (rhai)[https://rhai.rs/] for building characters in a scripting language.
 
 - Create a character from rhai script
 - Script against a sheet in real time to calculate feature interactions and rolls.
+
+- [ ] Add rhai docs
+  - For now, examples can be found in src/tests.rs
 
 ```rust
 name = "Bob";
@@ -43,7 +46,7 @@ i.damage("2d4", "fire");
 spells.add(i);
 ```
 
-### Ataxia
+### Blackletter
 The GUI culmination of all the projects.
 
 - [ x ] Hot reloading
@@ -51,19 +54,28 @@ The GUI culmination of all the projects.
 - [ x ] Basic character information 
 - [ ] Inventory (partial)
 - [ ] Spells + Meters
-- [ x ] Integration with [ataxia_scripting](#ataxia-scripting)
+- [ x ] Integration with [blackletter_scripting](#blackletter-scripting)
 
+## Platform support
+- Should work on most Linux distributions
+  - Install rust toolchain
+  - Follow errors for missing system packages
+- Windows 
+  - Install rust toolchain
+- Mac Os
+  - Probably works, but untested
 
 ## Building
-
+1. Clone this repo.
+2. This.
 This project uses info from the D&D Srd. Clone it before building.
 ```bash
 git clone https://github.com/5e-bits/5e-database
 cargo build
 ```
-
-To install ataxia ui to path
+Or this.
+To install Blackletter ui to path (what you probably want)
 ```bash
 git clone https://github.com/5e-bits/5e-database
-cargo install --path ataxia --locked
+cargo install --path blackletter --locked
 ```

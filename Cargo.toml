@@ -1,16 +1,16 @@
 [workspace]
 members = [
-    "ataxia",
-    "ataxia_cli",
-    "ataxia_scripting",
-    "ataxia_types",
+    "blackletter",
+    "blackletter_cli",
+    "blackletter_scripting",
+    "blackletter_types",
 ]
 resolver = "3"
 
 [workspace.dependencies]
 anyhow = "1.0.102"
-ataxia_types = { path = "ataxia_types" }
-ataxia_scripting = { path = "ataxia_scripting" }
+blackletter_types = { path = "blackletter_types" }
+blackletter_scripting = { path = "blackletter_scripting" }
 clap = { version = "4.6.1", features = ["derive"] }
 rhai = { version = "1.25.1" }
 rand = "0.10.0"

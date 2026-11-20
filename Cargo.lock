@@ -692,83 +692,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ataxia"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "ataxia_scripting",
- "ataxia_types",
- "iced",
- "log",
- "notify-debouncer-full",
- "rfd",
- "serde",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "ataxia_cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "arboard",
- "ataxia_types",
- "clap",
- "color-eyre",
- "edit-distance",
- "enumflags2",
- "itertools 0.14.0",
- "parking_lot",
- "rand 0.10.2",
- "ratatui",
- "schemars 1.2.2",
- "serde",
- "serde_json",
- "thiserror 2.0.19",
- "tui-input",
-]
-
-[[package]]
-name = "ataxia_scripting"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "ataxia_types",
- "env_logger",
- "log",
- "rand 0.10.2",
- "regex",
- "reqwest 0.13.4",
- "rhai",
- "rig",
- "schemars 1.2.2",
- "scraper",
- "serde",
- "serde_json",
- "thiserror 2.0.19",
- "tokio",
- "url",
-]
-
-[[package]]
-name = "ataxia_types"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "enumflags2",
- "rand 0.10.2",
- "regex",
- "rhai",
- "schemars 1.2.2",
- "serde",
- "serde_json",
- "strum 0.28.0",
- "thiserror 2.0.19",
-]
-
-[[package]]
 name = "atoi"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -980,6 +903,84 @@ dependencies = [
  "radium",
  "tap",
  "wyz",
+]
+
+[[package]]
+name = "blackletter"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blackletter_scripting",
+ "blackletter_types",
+ "env_logger",
+ "iced",
+ "log",
+ "notify-debouncer-full",
+ "rfd",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "blackletter_cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arboard",
+ "blackletter_types",
+ "clap",
+ "color-eyre",
+ "edit-distance",
+ "enumflags2",
+ "itertools 0.14.0",
+ "parking_lot",
+ "rand 0.10.2",
+ "ratatui",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tui-input",
+]
+
+[[package]]
+name = "blackletter_scripting"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "blackletter_types",
+ "env_logger",
+ "log",
+ "rand 0.10.2",
+ "regex",
+ "reqwest 0.13.4",
+ "rhai",
+ "rig",
+ "schemars 1.2.2",
+ "scraper",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio",
+ "url",
+]
+
+[[package]]
+name = "blackletter_types"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "enumflags2",
+ "rand 0.10.2",
+ "regex",
+ "rhai",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "strum 0.28.0",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
