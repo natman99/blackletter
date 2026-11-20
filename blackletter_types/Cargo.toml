@@ -1,0 +1,27 @@
+[package]
+name = "blackletter_types"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { workspace = true }
+enumflags2 = { version = "0.7.12", features = ["serde"] }
+rand = { workspace = true }
+regex = "1.12.3"
+schemars = { version = "1.2.1", optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+strum = { version = "0.28.0", features = ["derive"] }
+thiserror = { workspace = true }
+
+rhai = { workspace = true, optional = true }
+
+[features]
+serde = ["dep:serde", "dep:serde_json"]
+schema = ["dep:schemars"]
+rhai = ["dep:rhai"]
+
+[lints.clippy]
+pedantic = { level = "deny" }
+nursery = { level = "deny" }
