@@ -140,9 +140,9 @@ impl Character {
 
     pub fn passive_senses(&self) -> PassiveSenses {
         PassiveSenses {
-            insight: self.senses.get_insight(&self.ability_scores),
-            perception: self.senses.get_perception(&self.ability_scores),
-            investigation: self.senses.get_perception(&self.ability_scores),
+            insight: self.senses.get_insight(&self.ability_scores, &self.skills),
+            perception: self.senses.get_perception(&self.ability_scores, &self.skills),
+            investigation: self.senses.get_investigation(&self.ability_scores, &self.skills),
         }
     }
 }
@@ -450,5 +450,21 @@ mod tests {
     fn test_scores() {
         Score::from_str("str").unwrap();
         Score::from_str("Str").unwrap();
+    }
+
+    #[test]
+    fn test_passive_senses_srd_example() {
+        // PHB passive checks: 10 + all applicable modifiers.
+        // Wis 15, proficient in Perception -> passive 14.
+        let mut sheet = Character::default();
+        sheet.ability_scores.wis.base = 15;
+        sheet
+            .skills
+            .proficiencies
+            .set(skills::Skill::Perception, true);
+        assert_eq!(sheet.passive_senses().perception, 14);
+        // Investigation scales from Intelligence, not Perception.
+        sheet.ability_scores.int.base = 12;
+        assert_eq!(sheet.passive_senses().investigation, 11);
     }
 }

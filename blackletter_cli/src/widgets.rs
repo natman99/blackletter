@@ -125,9 +125,9 @@ fn render_main_left(sheet: &Character, frame: &mut Frame, area: Rect) {
         format!("{}", sheet.save_dc()),
         format!(
             "Per {}, Inv {}, Ins {}",
-            sheet.senses.get_perception(&sheet.ability_scores),
-            sheet.senses.get_investigation(&sheet.ability_scores),
-            sheet.senses.get_insight(&sheet.ability_scores)
+            sheet.senses.get_perception(&sheet.ability_scores, &sheet.skills),
+            sheet.senses.get_investigation(&sheet.ability_scores, &sheet.skills),
+            sheet.senses.get_insight(&sheet.ability_scores, &sheet.skills)
         ),
         format!("{}", sheet.senses.extra),
     ];

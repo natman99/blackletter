@@ -250,12 +250,13 @@ impl Spell {
                 };
 
                 let roll = if let Some(a) = damage.damage_at_character_level {
-                    let d = match sheet.classes[0].level.0 {
-                        1..5 => a.n1,
-                        5..11 => a.n5,
-                        11..14 => a.n11,
-                        17..20 => a.n17,
-                        _ => unreachable!(),
+                    // SRD: scales with total character level at thresholds
+                    // 1, 5, 11, 17 (levels 14-16 use the 11 bucket, 20+ the 17).
+                    let d = match sheet.classes.total_level().max(1) {
+                        1..=4 => a.n1,
+                        5..=10 => a.n5,
+                        11..=16 => a.n11,
+                        _ => a.n17,
                     };
                     let r = Roll::from_str(&d).context("Failed to parse character damage roll")?;
                     Some(r)
@@ -368,5 +369,53 @@ mod tests {
                 .context(format!("{}", name))
                 .unwrap();
         }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_cantrip_damage_scales_with_total_level() {
+        use crate::class::{Class, ClassType, Level};
+
+        let path = "../5e-database/src/2014/en/5e-SRD-Spells.json";
+        let s = fs::read_to_string(path).unwrap();
+        let spells: Vec<DatabaseSpell> = serde_json::from_str(&s).unwrap();
+        let firebolt = spells
+            .iter()
+            .find(|sp| sp.index == "fire-bolt")
+            .unwrap()
+            .clone();
+
+        // SRD: fire bolt damage die doubles at character levels 5, 11, 17.
+        for (level, expected) in [
+            (1, "1d10"),
+            (4, "1d10"),
+            (5, "2d10"),
+            (11, "3d10"),
+            (14, "3d10"), // previously panicked here
+            (16, "3d10"), // previously panicked here
+            (17, "4d10"),
+            (20, "4d10"), // previously panicked here
+        ] {
+            let mut sheet = Character::default();
+            sheet.classes[0].level = Level(level);
+            let spell = Spell::try_from_database(firebolt.clone(), &sheet).unwrap();
+            let Effect::Damage(d) = spell.effect else {
+                panic!("expected damage effect at level {level}");
+            };
+            assert_eq!(d.damage, Roll::from_str(expected).unwrap(), "level {level}");
+        }
+
+        // Multiclass scaling uses total character level: fighter 3 / wizard 2 = 5.
+        let mut sheet = Character::default();
+        sheet.classes[0].level = Level(3);
+        let mut wiz = Class::default();
+        wiz.class = ClassType::Wizard;
+        wiz.level = Level(2);
+        sheet.classes.classes.push(wiz);
+        let spell = Spell::try_from_database(firebolt, &sheet).unwrap();
+        let Effect::Damage(d) = spell.effect else {
+            panic!("expected damage effect");
+        };
+        assert_eq!(d.damage, Roll::from_str("2d10").unwrap());
     }
 }

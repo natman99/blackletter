@@ -24,6 +24,13 @@ pub struct Classes {
 }
 
 impl Classes {
+    /// Total character level across all classes. SRD: proficiency bonus and
+    /// cantrip scaling use total character level, not per-class level.
+    #[must_use]
+    pub fn total_level(&self) -> i64 {
+        self.classes.iter().map(|c| c.level.0).sum()
+    }
+
     pub fn heal(
         &mut self,
         index: usize,
