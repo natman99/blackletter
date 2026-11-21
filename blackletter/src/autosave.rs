@@ -11,7 +11,7 @@
 
 use futures::StreamExt as _;
 use futures::channel::mpsc::{UnboundedSender, unbounded};
-use gpui::{App, AppContext as _, AsyncApp, EntityId, Global, Task};
+use gpui::{App, AsyncApp, EntityId, Global, Task};
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
@@ -23,6 +23,9 @@ type Saver = Box<dyn FnMut(&mut App) -> bool>;
 
 pub struct Autosave {
     savers: HashMap<EntityId, Saver>,
+    // Read by `mark_dirty`; the whole wake path is consumed by the document
+    // entities that arrive in Phase 2.
+    #[allow(dead_code)]
     tx: UnboundedSender<()>,
     // The task handle lives here so it is never dropped (a dropped gpui Task
     // silently cancels).
@@ -44,7 +47,7 @@ impl Autosave {
             while rx.next().await.is_some() {
                 cx.background_executor().timer(DEBOUNCE).await;
                 // Coalesce: wakes that landed during the debounce are spent.
-                while let Ok(Some(())) = rx.try_next() {}
+                while rx.try_recv().is_ok() {}
                 Self::flush(cx);
             }
         });
@@ -52,7 +55,7 @@ impl Autosave {
     }
 
     fn flush(cx: &mut AsyncApp) {
-        let _ = cx.update(|cx| {
+        cx.update(|cx| {
             // Move the map out so savers may touch the App (and the global)
             // while running; put it back afterwards.
             let mut savers = std::mem::take(&mut cx.global_mut::<Autosave>().savers);
@@ -64,15 +67,19 @@ impl Autosave {
     }
 
     /// Register a document's saver. The closure returns true when it wrote.
+    /// (Document entities arrive in Phase 2; quiet until then.)
+    #[allow(dead_code)]
     pub fn register(&mut self, id: EntityId, saver: Saver) {
         self.savers.insert(id, saver);
     }
 
+    #[allow(dead_code)]
     pub fn unregister(&mut self, id: EntityId) {
         self.savers.remove(&id);
     }
 
     /// A document went dirty: wake the flusher.
+    #[allow(dead_code)]
     pub fn mark_dirty(&mut self, _id: EntityId) {
         let _ = self.tx.unbounded_send(());
     }
