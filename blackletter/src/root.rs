@@ -7,6 +7,9 @@ use gpui::{
     Context, FocusHandle, KeyBinding, Render, SharedString, Window, actions, div, prelude::*,
 };
 
+use crate::session::Session;
+use std::path::PathBuf;
+
 actions!(blackletter, [ModeSheet, ModeDungeon]);
 
 /// The app-wide keymap. Context-scoped contexts arrive with the modes; these
@@ -29,14 +32,19 @@ pub struct RootView {
     mode: Mode,
     status: Option<SharedString>,
     focus_handle: FocusHandle,
+    session: Session,
+    session_path: Option<PathBuf>,
 }
 
 impl RootView {
-    pub fn new(cx: &gpui::App) -> Self {
+    pub fn new(cx: &gpui::App, session: Session, session_path: Option<PathBuf>) -> Self {
+        let mode = session.mode.into();
         Self {
-            mode: Mode::default(),
+            mode,
             status: None,
             focus_handle: cx.focus_handle(),
+            session,
+            session_path,
         }
     }
 
@@ -45,26 +53,39 @@ impl RootView {
     }
 
     /// Report a line in the status bar (chonk rule: success lines too).
+    // Consumed by the file plumbing (Task 1.3); quiet until then.
+    #[allow(dead_code)]
     pub fn set_status(&mut self, line: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.status = Some(line.into());
         cx.notify();
     }
 
-    fn set_mode(&mut self, mode: Mode, cx: &mut Context<Self>) {
-        if self.mode != mode {
-            self.mode = mode;
-            cx.notify();
+    fn set_mode(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {
+        if self.mode == mode {
+            return;
         }
+        self.mode = mode;
+        // Session persists on mode change: the file is tiny and this is the
+        // moment both the mode and a representative window size are known.
+        self.session.mode = mode.into();
+        let b = window.bounds();
+        self.session.window_size = Some((f32::from(b.size.width), f32::from(b.size.height)));
+        if let Some(path) = self.session_path.clone() {
+            let _ = crate::session::save(&path, &self.session);
+        }
+        cx.notify();
     }
 
-    fn on_mode_sheet(&mut self, _: &ModeSheet, _: &mut Window, cx: &mut Context<Self>) {
-        self.set_mode(Mode::Sheet, cx);
+    fn on_mode_sheet(&mut self, _: &ModeSheet, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_mode(Mode::Sheet, window, cx);
     }
 
-    fn on_mode_dungeon(&mut self, _: &ModeDungeon, _: &mut Window, cx: &mut Context<Self>) {
-        self.set_mode(Mode::Dungeon, cx);
+    fn on_mode_dungeon(&mut self, _: &ModeDungeon, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_mode(Mode::Dungeon, window, cx);
     }
 
+    // Read by the session restore path (Task 1.2).
+    #[allow(dead_code)]
     pub fn mode(&self) -> Mode {
         self.mode
     }
@@ -78,9 +99,9 @@ impl RootView {
             .rounded_md()
             .when(active, |d| d.bg(gpui::rgb(0x45_47_66)))
             .text_color(gpui::rgb(if active { 0xcd_d6_f4 } else { 0x6c_70_86 }))
-            .on_click(cx.listener(move |this, _, _, cx| match label {
-                "Sheet" => this.set_mode(Mode::Sheet, cx),
-                _ => this.set_mode(Mode::Dungeon, cx),
+            .on_click(cx.listener(move |this, _, window, cx| match label {
+                "Sheet" => this.set_mode(Mode::Sheet, window, cx),
+                _ => this.set_mode(Mode::Dungeon, window, cx),
             }))
             .child(label)
     }
@@ -142,7 +163,7 @@ mod tests {
 
     fn open(cx: &mut TestAppContext) -> (gpui::WindowHandle<RootView>, gpui::Entity<RootView>) {
         cx.update(|cx| cx.bind_keys(keybindings()));
-        let window = cx.add_window(|_, cx| RootView::new(cx));
+        let window = cx.add_window(|_, cx| RootView::new(cx, Session::default(), None));
         window
             .update(cx, |view, window, cx| window.focus(view.focus_handle(), cx))
             .unwrap();
@@ -164,5 +185,24 @@ mod tests {
         cx.simulate_keystrokes(window.into(), "ctrl-1");
         cx.run_until_parked();
         assert_eq!(mode(cx, &root), Mode::Sheet);
+    }
+
+    #[gpui::test]
+    fn mode_change_persists_to_the_session_file(cx: &mut TestAppContext) {
+        let dir = std::env::temp_dir().join(format!("bl_session_persist_{}", std::process::id()));
+        let path = dir.join("session.json");
+        let _ = std::fs::remove_file(&path);
+        cx.update(|cx| cx.bind_keys(keybindings()));
+        let window =
+            cx.add_window(|_, cx| RootView::new(cx, Session::default(), Some(path.clone())));
+        window
+            .update(cx, |view, window, cx| window.focus(view.focus_handle(), cx))
+            .unwrap();
+        cx.simulate_keystrokes(window.into(), "ctrl-2");
+        cx.run_until_parked();
+        let saved = crate::session::load(&path);
+        assert_eq!(saved.mode, crate::session::StoredMode::Dungeon);
+        assert!(saved.window_size.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
