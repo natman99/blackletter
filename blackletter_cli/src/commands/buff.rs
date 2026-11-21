@@ -49,9 +49,13 @@ fn add(split: &mut Split<&str>, app: &mut App) -> command::Result<()> {
 
     let cond = Condition::new(name.to_string(), duration.unwrap_or(-1));
 
-    app.sheet.conditions.conditions.push(cond);
-
-    Ok(())
+    if app.sheet.add_condition(cond) {
+        Ok(())
+    } else {
+        Err(CommandError::CommandError(
+            "immune to that condition".into(),
+        ))
+    }
 }
 
 fn remove(split: &mut Split<&str>, app: &mut App) -> command::Result<()> {
@@ -63,10 +67,7 @@ fn remove(split: &mut Split<&str>, app: &mut App) -> command::Result<()> {
             .iter()
             .map(|f| f.kind.to_string())
             .collect::<Vec<String>>();
-        let data = names
-            .iter()
-            .map(|f| f.as_str())
-            .collect::<Vec<&str>>();
+        let data = names.iter().map(|f| f.as_str()).collect::<Vec<&str>>();
 
         if let filter = search::filter(remove, &data, 2)
             && filter.len() == 1

@@ -230,6 +230,23 @@ pub enum ClassType {
     Other(String),
 }
 
+impl ClassType {
+    /// How this class contributes to spellcaster level (SRD 2014).
+    /// `Other(_)` defaults to no casting; grant it slots via
+    /// `Character::spell_slots_override` or meters.
+    #[must_use]
+    pub fn caster_progression(&self) -> crate::spell_slots::CasterProgression {
+        use crate::spell_slots::CasterProgression::*;
+        match self {
+            Self::Bard | Self::Cleric | Self::Druid | Self::Sorcerer | Self::Wizard => Full,
+            Self::Paladin | Self::Ranger => Half,
+            Self::Artificer => Third,
+            Self::Warlock => Pact,
+            _ => None,
+        }
+    }
+}
+
 impl From<String> for ClassType {
     fn from(value: String) -> Self {
         Self::from_str(&value).unwrap()
@@ -354,7 +371,11 @@ mod tests {
             let classes = Classes {
                 classes: vec![Class::new(Level(level), "fighter")],
             };
-            assert_eq!(classes.proficiency_bonus(), expected(level), "level {level}");
+            assert_eq!(
+                classes.proficiency_bonus(),
+                expected(level),
+                "level {level}"
+            );
         }
         // Multiclass uses total level: fighter 3 / wizard 2 -> level 5 -> +3.
         let classes = Classes {

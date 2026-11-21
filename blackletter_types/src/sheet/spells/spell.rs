@@ -28,6 +28,21 @@ use std::str::FromStr;
 #[cfg(feature = "serde")]
 use anyhow::Context;
 
+/// A spell's material component: what it is, what it costs (gp), and
+/// whether casting consumes it (PHB 2014: consumed only when a spell
+/// says so, e.g. Identify's 100 gp pearl).
+#[derive(Debug, Clone, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+pub struct MaterialComponent {
+    /// Description from the spell text ("a pearl worth at least 100 gp").
+    pub name: String,
+    /// Cost in gold pieces. 0 = covered by a component pouch.
+    pub cost: i64,
+    /// Whether casting consumes the component.
+    pub consumed: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
@@ -59,6 +74,11 @@ pub struct Spell {
     pub area: Option<Area>,
     /// Components that the spell requires.
     pub components: Vec<Component>,
+    /// Material component details (name, cost in gp, whether casting
+    /// consumes it). `None` = no material component. Costs default to 0
+    /// when imported (the SRD JSON has no cost field): fill in by hand or
+    /// via homebrew; `Character::pay_material_cost` deducts from gold.
+    pub material: Option<MaterialComponent>,
     /// The source of the spell.
     pub source: Option<Source>,
     /// The classes that can have this spell.
@@ -208,6 +228,12 @@ impl HasSource for Spell {
 impl Spell {
     #[cfg(feature = "serde")]
     pub fn try_from_database(value: DatabaseSpell, sheet: &Character) -> anyhow::Result<Self> {
+        let material = value.material.map(|m| MaterialComponent {
+            name: m,
+            // The SRD JSON carries no cost; set it by hand or homebrew.
+            cost: 0,
+            consumed: false,
+        });
         let mut components = vec![];
         for i in value.components {
             let a = Component::from_str(&i).context("Missing component")?;
@@ -333,6 +359,7 @@ impl Spell {
                 None
             },
             components,
+            material,
             source: None,
             classes,
         };

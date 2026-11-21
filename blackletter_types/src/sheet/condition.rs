@@ -19,7 +19,7 @@ pub struct Conditions {
     pub conditions: Vec<Condition>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 /// One of the fifteen SRD conditions (PHB appendix A), or a homebrew one.
@@ -178,6 +178,12 @@ impl ConditionKind {
     pub fn melee_hits_are_auto_critical(&self) -> bool {
         matches!(self, Self::Paralyzed | Self::Unconscious)
     }
+
+    /// The creature's own attack rolls have advantage (Invisible).
+    #[must_use]
+    pub fn own_attacks_have_advantage(&self) -> bool {
+        matches!(self, Self::Invisible)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Hash)]
@@ -214,7 +220,8 @@ impl Display for Condition {
 }
 
 impl Condition {
-    pub fn new(name: String, duration: i32) -> Self {
+    pub fn new(name: impl Into<String>, duration: i32) -> Self {
+        let name = name.into();
         Self {
             kind: name.parse().unwrap_or(ConditionKind::Custom(name)),
             duration,
@@ -301,14 +308,23 @@ mod tests {
 
     #[test]
     fn test_kind_parsing() {
-        assert_eq!("blinded".parse::<ConditionKind>().unwrap(), ConditionKind::Blinded);
-        assert_eq!("Poisoned".parse::<ConditionKind>().unwrap(), ConditionKind::Poisoned);
+        assert_eq!(
+            "blinded".parse::<ConditionKind>().unwrap(),
+            ConditionKind::Blinded
+        );
+        assert_eq!(
+            "Poisoned".parse::<ConditionKind>().unwrap(),
+            ConditionKind::Poisoned
+        );
         assert_eq!(
             "Doomed".parse::<ConditionKind>().unwrap(),
             ConditionKind::Custom("Doomed".to_string())
         );
         // Condition::new keeps SRD names typed and homebrew names Custom.
-        assert_eq!(Condition::new("Stunned".to_string(), -1).kind, ConditionKind::Stunned);
+        assert_eq!(
+            Condition::new("Stunned".to_string(), -1).kind,
+            ConditionKind::Stunned
+        );
         assert_eq!(
             Condition::new("Homebrew Doom".to_string(), 3).kind,
             ConditionKind::Custom("Homebrew Doom".to_string())
@@ -327,7 +343,10 @@ mod tests {
             ConditionKind::Unconscious.auto_fail_saves(),
             [Score::Str, Score::Dex]
         );
-        assert_eq!(ConditionKind::Restrained.disadvantage_on_saves(), [Score::Dex]);
+        assert_eq!(
+            ConditionKind::Restrained.disadvantage_on_saves(),
+            [Score::Dex]
+        );
         assert!(ConditionKind::Blinded.attacks_against_have_advantage());
         assert!(ConditionKind::Invisible.attacks_against_have_disadvantage());
         assert!(!ConditionKind::Invisible.attacks_against_have_advantage());

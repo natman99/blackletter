@@ -8,13 +8,10 @@ use serde::{Deserialize, Serialize};
 #[cfg(feature = "rhai")]
 use rhai::CustomType;
 
-pub use feature::HasFeature;
-
-mod feature;
-
 use crate::{
-    Character, Score,
-    condition::Condition,
+    Score,
+    condition::{Condition, ConditionKind},
+    damage::DamageType,
     meter::Meter,
     senses::Sense,
     sheet::source::{HasSource, Source},
@@ -24,9 +21,11 @@ use crate::{
 
 #[derive(Debug, Clone, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
 #[cfg_attr(feature = "rhai", derive(CustomType))]
 pub struct Feature {
+    pub name: String,
     pub source: Option<Source>,
     pub effects: Vec<Effect>,
 }
@@ -44,7 +43,9 @@ impl HasSource for Feature {
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
-/// The effect the feature has
+/// The effect the feature has. Effects are never applied by mutation:
+/// they are aggregated into `Modifiers` and read at query time, so a
+/// grant carrying them can be added or removed losslessly.
 pub enum Effect {
     /// Flat armor class (ac) bonus.
     AcBonus(i64),
@@ -64,46 +65,33 @@ pub enum Effect {
     InitiativeBonus(i64),
     /// A condition effect for the conditions page
     Condition(Condition),
+    /// Expertise in a skill (proficiency doubled).
     Expertise(Skill),
-}
-
-impl Effect {
-    pub fn apply(&self, s: &mut Character) {
-        match &self {
-            Effect::AbilityScoreBonus(bonus) => s
-                .ability_scores
-                .get_mut(&bonus.score)
-                .add_bonus(bonus.bonus.into()),
-            Effect::AcBonus(b) => {
-                let i = s.armor_class.0 + b;
-                // Negative bonus should never be bigger than 10
-                s.armor_class.0 = i;
-            }
-            Effect::Spell(spell) => {
-                s.spells.spells.insert(spell.name.clone(), spell.clone());
-            }
-            Effect::Meter(meter) => {
-                s.meters
-                    .meters
-                    .insert(meter.name.to_string(), meter.clone());
-            }
-            Effect::HealthBonusPerLevel(b) => {
-                s.health.level_bonus += b;
-            }
-            Effect::Sense(sense) => match sense {
-                Sense::BlindSight => s.senses.extra.blind_sight = true,
-                Sense::DarkVision => s.senses.extra.dark_vision = true,
-                Sense::TremorSense => s.senses.extra.tremor_sense = true,
-                Sense::TrueSight => s.senses.extra.true_sight = true,
-            },
-            Effect::AddProficiency(skill) => {
-                s.skills.proficiencies.set(*skill, true);
-            }
-            Effect::InitiativeBonus(b) => s.initiative.bonus += b,
-            Effect::Condition(e) => s.conditions.conditions.push(e.clone()),
-            Effect::Expertise(skill) => s.skills.expertise.insert(*skill),
-        }
-    }
+    /// Bonus to walking speed in feet.
+    SpeedBonus(i64),
+    /// Flat bonus to a specific skill check.
+    SkillBonus { skill: Skill, bonus: i64 },
+    /// Flat bonus to a specific saving throw.
+    SaveBonus { score: Score, bonus: i64 },
+    /// The creature can't be subjected to this condition.
+    ConditionImmunity(ConditionKind),
+    /// Resistant to a damage type (half damage).
+    Resistance(DamageType),
+    /// Immune to a damage type (no damage).
+    Immunity(DamageType),
+    /// Vulnerable to a damage type (double damage).
+    Vulnerability(DamageType),
+    /// Resistance to bludgeoning, piercing, and slashing from nonmagical
+    /// attacks (the common SRD trait).
+    NonmagicalWeaponResistance,
+    /// Sets an armor-class formula: base AC + Dex modifier capped by
+    /// `dex_cap` (`None` = uncapped, `Some(0)` = heavy armor). Worn armor,
+    /// Mage Armor, and similar features all grant this; highest base wins.
+    ArmorClassBase { base: i64, dex_cap: Option<i64> },
+    /// The modifier of this score adds to AC (Barbarian: Con, Monk: Wis).
+    AbilityAcBonus(Score),
+    /// Homebrew effect with no mechanical interpretation; shown, not computed.
+    Custom(String),
 }
 
 impl Display for Effect {
@@ -122,6 +110,24 @@ impl Display for Effect {
             Effect::InitiativeBonus(b) => format!("Initiative {:+}", b),
             Effect::Condition(condition) => format!("{}", condition.kind),
             Effect::Expertise(skill) => format!("Expertise {skill}"),
+            Effect::SpeedBonus(b) => format!("Speed {b:+} ft"),
+            Effect::SkillBonus { skill, bonus } => format!("{skill} {bonus:+}"),
+            Effect::SaveBonus { score, bonus } => format!("{score} save {bonus:+}"),
+            Effect::ConditionImmunity(kind) => format!("Immune to {kind}"),
+            Effect::Resistance(kind) => format!("Resistant to {kind:?}"),
+            Effect::Immunity(kind) => format!("Immune to {kind:?}"),
+            Effect::Vulnerability(kind) => format!("Vulnerable to {kind:?}"),
+            Effect::NonmagicalWeaponResistance => {
+                "Resistant to nonmagical weapon damage".to_string()
+            }
+            Effect::ArmorClassBase { base, dex_cap } => match dex_cap {
+                Some(cap) => format!("AC {base} + Dex (max {cap})"),
+                None => format!("AC {base} + Dex"),
+            },
+            Effect::AbilityAcBonus(score) => {
+                format!("AC includes {score} modifier")
+            }
+            Effect::Custom(s) => s.clone(),
         };
         write!(f, "{}", s)
     }
@@ -148,48 +154,18 @@ pub struct AbilityScoreBonus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        condition::Condition,
-        meter::{Meter, RestoreTime},
-        senses::Sense,
-    };
 
     #[test]
-    fn test_apply_effects() {
-        let mut sheet = Character::default();
-        // All default scores are 10 (+0), default proficiency bonus +2.
-        assert_eq!(sheet.armor_class.get(), 10);
-
-        Effect::AcBonus(3).apply(&mut sheet);
-        assert_eq!(sheet.armor_class.get(), 13);
-
-        Effect::AbilityScoreBonus(AbilityScoreBonus {
-            score: Score::Int,
-            bonus: 2,
-        })
-        .apply(&mut sheet);
-        assert_eq!(sheet.ability_scores.int.get(), 12);
-
-        Effect::AddProficiency(Skill::Perception).apply(&mut sheet);
-        assert_eq!(sheet.skills.check(&Skill::Perception, &sheet.ability_scores), 2);
-        Effect::Expertise(Skill::Perception).apply(&mut sheet);
-        assert_eq!(sheet.skills.check(&Skill::Perception, &sheet.ability_scores), 4);
-
-        Effect::InitiativeBonus(2).apply(&mut sheet);
-        assert_eq!(sheet.initiative.get(&sheet.ability_scores), 2);
-
-        Effect::HealthBonusPerLevel(1).apply(&mut sheet);
-        assert_eq!(sheet.health.level_bonus, 1);
-
-        Effect::Sense(Sense::DarkVision).apply(&mut sheet);
-        assert!(sheet.senses.extra.dark_vision);
-
-        Effect::Condition(Condition::new("Stunned".to_string(), -1)).apply(&mut sheet);
-        assert_eq!(sheet.conditions.conditions.len(), 1);
-
-        Effect::Meter(Meter::new("Ki".to_string(), 4, RestoreTime::default())).apply(&mut sheet);
-        let ki = sheet.meters.meters.get("Ki").unwrap();
-        assert_eq!(ki.slot_number, 4);
-        assert_eq!(ki.spent, 0);
+    fn test_effect_display() {
+        assert_eq!(Effect::AcBonus(2).to_string(), "AC: +2");
+        assert_eq!(Effect::SpeedBonus(10).to_string(), "Speed +10 ft");
+        assert_eq!(
+            Effect::ConditionImmunity(ConditionKind::Poisoned).to_string(),
+            "Immune to Poisoned"
+        );
+        assert_eq!(
+            Effect::Custom("Your soul glows on Tuesdays".to_string()).to_string(),
+            "Your soul glows on Tuesdays"
+        );
     }
 }

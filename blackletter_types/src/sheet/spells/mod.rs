@@ -11,7 +11,9 @@ use std::collections::BTreeMap;
 // use crate::database::spell::Spell;
 
 mod spell;
-pub use spell::{Area, Component, Damage, Effect, Heal, School, Spell, SpellType, Success};
+pub use spell::{
+    Area, Component, Damage, Effect, Heal, MaterialComponent, School, Spell, SpellType, Success,
+};
 
 #[derive(Debug, Clone, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]

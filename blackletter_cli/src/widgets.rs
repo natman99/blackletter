@@ -117,17 +117,27 @@ fn render_main_left(sheet: &Character, frame: &mut Frame, area: Rect) {
             "{}/{} ({})",
             sheet.health, sheet.health.max, sheet.health.bonus
         ),
-        format!("{}", sheet.armor_class),
-        format!("{}", sheet.race),
+        format!("{}", sheet.armor_class_total()),
+        sheet
+            .race
+            .as_ref()
+            .map(|r| r.name.clone())
+            .unwrap_or_default(),
         format!("{}", sheet.initiative),
         format!("{}", sheet.skills.proficiency_bonus),
         format!("{}", sheet.walking_speed),
         format!("{}", sheet.save_dc()),
         format!(
             "Per {}, Inv {}, Ins {}",
-            sheet.senses.get_perception(&sheet.ability_scores, &sheet.skills),
-            sheet.senses.get_investigation(&sheet.ability_scores, &sheet.skills),
-            sheet.senses.get_insight(&sheet.ability_scores, &sheet.skills)
+            sheet
+                .senses
+                .get_perception(&sheet.ability_scores, &sheet.skills),
+            sheet
+                .senses
+                .get_investigation(&sheet.ability_scores, &sheet.skills),
+            sheet
+                .senses
+                .get_insight(&sheet.ability_scores, &sheet.skills)
         ),
         format!("{}", sheet.senses.extra),
     ];
@@ -337,8 +347,7 @@ fn render_spells_list<'a>(frame: &mut Frame, area: Rect, sheet: &'a Character) {
     {
         let s = i.1;
         let dc = {
-            if let blackletter_types::spells::SpellType::Saving { dc_type, success } =
-                &s.spell_type
+            if let blackletter_types::spells::SpellType::Saving { dc_type, success } = &s.spell_type
             {
                 format!("{dc_type} {}, {success}", sheet.save_dc())
             } else {

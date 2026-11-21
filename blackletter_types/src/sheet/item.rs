@@ -8,7 +8,7 @@ use rhai::CustomType;
 
 use crate::{
     AbilityScores, Score,
-    feature::{Feature, HasFeature},
+    feature::{Effect, Feature},
     roll::Rollable,
     sheet::{
         roll::Roll,
@@ -35,6 +35,9 @@ pub struct Item {
     pub to_hit: Option<Score>,
     pub source: Option<Source>,
     pub feature: Option<Feature>,
+    /// Whether the item is worn/held in a way that makes its feature's
+    /// effects count. Only equipped items contribute to `Modifiers`.
+    pub equipped: bool,
 }
 
 impl Default for Item {
@@ -47,6 +50,7 @@ impl Default for Item {
             source: None,
             feature: None,
             to_hit: None,
+            equipped: false,
         }
     }
 }
@@ -86,6 +90,15 @@ impl Item {
             None
         }
     }
+
+    /// The effects this item grants (its feature, if any).
+    #[must_use]
+    pub fn effects(&self) -> &[Effect] {
+        self.feature
+            .as_ref()
+            .map(|f| f.effects.as_slice())
+            .unwrap_or(&[])
+    }
 }
 
 impl Rollable for Item {
@@ -108,18 +121,11 @@ impl HasSource for Item {
     }
 }
 
-impl HasFeature for Item {
-    fn apply(&self, sheet: &mut super::Character) {
-        if let Some(ref f) = self.feature {
-            for effect in &f.effects {
-                effect.apply(sheet);
-            }
-        }
-    }
-
-    fn add(&mut self, feature: super::feature::Effect) {
+impl Item {
+    pub fn add(&mut self, feature: Effect) {
         if self.feature.is_none() {
             self.feature = Some(Feature {
+                name: self.name.clone(),
                 source: self.source().cloned(),
                 effects: vec![],
             });

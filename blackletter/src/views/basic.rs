@@ -315,7 +315,11 @@ fn character_details(sheet: &Character) -> Container<'_, Message> {
         .collect::<String>();
     let a = [
         sheet.name.clone(),
-        sheet.race.clone(),
+        sheet
+            .race
+            .as_ref()
+            .map(|r| r.name.clone())
+            .unwrap_or_default(),
         format!("{}", sheet.classes),
         subclasses,
     ]
