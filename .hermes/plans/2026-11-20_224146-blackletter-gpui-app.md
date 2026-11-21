@@ -151,9 +151,10 @@ Three features the rulings need that the engine doesn't have yet. Each = its own
 
 ### Task 3.2 — Interactive sections
 **DONE (slice 1, `b469413`):** skill/save proficiency toggles (space), damage field via d with damage-type cycle (t) routed through `apply_resistance` + concentration save, death-save roll (r), short/long rest (s/shift-S), section-aware +/- (level / ability score / HP bonus, gold, exhaustion), `[`/`]` section nav (tab is unusable: gpui's default focus traversal fires even with a matching context binding), FieldElement rendered at view root so fields work in every section. Live-verified with ydotool-driven keystrokes + niri window screenshot.
-**Remaining slices:** hit-die buttons, death-save pip UI, inventory, features/feats/traits, notes.
+**Remaining slices:** inventory, features/feats/traits, notes.
 **DONE (slice 2, `c735548`):** Spells section — slot meters with pip rendering (classic + pact), space spends/restores or toggles prepared (prepared casters only), t casts (spend_spell_slot + start_concentration, DC reported). Hit-die buttons + death-save pip UI + conditions/inventory/features/notes remain.
-**DONE (slice 3, conditions):** SRD-15 picker with space apply/remove (immunity-aware), +/- round timers, t tick_conditions, customs listed on top.
+**DONE (slice 4, hit dice + death saves, 08959ce):** Combat rows 9-10 (spend hit die, roll death save w/ pips); grant meters wired (sync_grant_meters + Meter::pb_scaled); SRD instant death (check_instant_death, Wiki/07 combat.md:430).
+- **DONE (slice 3, conditions):** SRD-15 picker with space apply/remove (immunity-aware), +/- round timers, t tick_conditions, customs listed on top.
 - Abilities: 6 scores + derived mods; skills: proficiency toggle list (effective bonus shown, override-until-sync semantics per engine); saves: proficiency toggles.
 - Combat: HP edit + temp HP, damage/heal quick buttons (routes through `apply_resistance` with damage-type picker — engine already handles resist/vuln/immunity), AC flat-override toggle (`ArmorClass.flat`), speed, gold.
 - Meters/spell slots: slot pips per level (`spend_spell_slot`), pact slots short-rest styled differently; hit-die buttons (`spend_hit_die`).
