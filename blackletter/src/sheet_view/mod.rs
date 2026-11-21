@@ -9,7 +9,7 @@ mod doc;
 
 use std::path::PathBuf;
 
-use blackletter_types::{Score, damage::DamageType, skills::Skill};
+use blackletter_types::{Score, class::CastingMechanic, damage::DamageType, skills::Skill};
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable, KeyBinding,
     SharedString, WeakEntity, Window, actions, div, prelude::*,
@@ -237,6 +237,7 @@ impl SheetView {
             Section::Abilities => 6,
             Section::Skills => 24,
             Section::Combat => COMBAT_ROWS,
+            Section::Spells => self.slot_rows().len() + self.spell_rows().len(),
             _ => 0,
         }
     }
@@ -356,6 +357,10 @@ impl SheetView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.section == Section::Spells {
+            self.cast_spell(cx);
+            return;
+        }
         let all = DamageType::ALL;
         let i = all.iter().position(|d| *d == self.damage_type).unwrap_or(0);
         self.damage_type = all[(i + 1) % all.len()];
@@ -456,6 +461,7 @@ impl SheetView {
         match self.section {
             Section::Skills => self.toggle_skill_or_save(cx),
             Section::Combat => self.combat_activate(cx),
+            Section::Spells => self.toggle_spell_row(cx),
             _ => {}
         }
         cx.notify();
@@ -776,6 +782,7 @@ impl SheetView {
             Section::Abilities => self.abilities_section(cx),
             Section::Skills => self.skills_section(cx),
             Section::Combat => self.combat_section(cx),
+            Section::Spells => self.spells_section(cx),
             other => div()
                 .p_2()
                 .text_sm()
@@ -975,6 +982,208 @@ impl SheetView {
                     .text_sm()
                     .text_color(gpui::rgb(0x6c_70_86))
                     .child("j/k select  space toggles proficiency (* = proficient)"),
+            )
+            .into_any_element()
+    }
+
+    /// Slot meters (classic + pact), sorted by level then pact-last.
+    fn slot_rows(&self) -> Vec<(String, i64, bool)> {
+        let mut out: Vec<(String, i64, bool)> = self
+            .doc
+            .character
+            .meters
+            .meters
+            .keys()
+            .filter_map(|name| {
+                let (pact, rest) = match name.strip_prefix("pact_slot_") {
+                    Some(l) => (true, l),
+                    None => (false, name.strip_prefix("spell_slot_")?),
+                };
+                Some((name.clone(), rest.parse().unwrap_or(0), pact))
+            })
+            .collect();
+        out.sort_by_key(|(_, l, pact)| (*l, *pact));
+        out
+    }
+
+    /// Spell names sorted by (level, name) — the row order after the slots.
+    fn spell_rows(&self) -> Vec<(String, i64)> {
+        let mut out: Vec<(String, i64)> = self
+            .doc
+            .character
+            .spells
+            .spells
+            .iter()
+            .map(|(name, s)| (name.clone(), s.level))
+            .collect();
+        out.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+        out
+    }
+
+    fn toggle_spell_row(&mut self, cx: &mut Context<Self>) {
+        let slots = self.slot_rows();
+        if self.sel < slots.len() {
+            let (name, level, pact) = slots[self.sel].clone();
+            self.doc.edit(|c| {
+                if let Some(m) = c.meters.meters.get_mut(&name) {
+                    if m.spent < m.slot_number {
+                        m.spend();
+                    } else {
+                        m.spent = 0;
+                    }
+                }
+            });
+            let m = &self.doc.character.meters.meters[&name];
+            self.report(
+                format!(
+                    "{} L{} slot {} ({}/{})",
+                    if pact { "pact" } else { "spell" },
+                    level,
+                    if m.spent > 0 { "spent" } else { "restored" },
+                    m.slot_number - m.spent,
+                    m.slot_number,
+                ),
+                cx,
+            );
+            return;
+        }
+        let spells = self.spell_rows();
+        let idx = self.sel - slots.len();
+        if idx >= spells.len() {
+            return;
+        }
+        let (name, _) = spells[idx].clone();
+        let prepared_caster = matches!(
+            self.doc.character.casting_mechanic(),
+            Some(CastingMechanic::Prepared) | Some(CastingMechanic::PreparedWithSpellbook)
+        );
+        if !prepared_caster {
+            self.report("spontaneous caster: no prepared toggles", cx);
+            return;
+        }
+        self.doc.edit(|c| {
+            if let Some(s) = c.spells.spells.get_mut(&name) {
+                s.prepared = !s.prepared;
+            }
+        });
+        let prep = self.doc.character.spells.spells[&name].prepared;
+        self.report(
+            format!("{name} {}", if prep { "prepared" } else { "unprepared" }),
+            cx,
+        );
+    }
+
+    /// `t` in Spells: spend a slot, start concentration if the spell needs it.
+    fn cast_spell(&mut self, cx: &mut Context<Self>) {
+        let slots_n = self.slot_rows().len();
+        let spells = self.spell_rows();
+        let Some(idx) = self.sel.checked_sub(slots_n) else {
+            return;
+        };
+        if idx >= spells.len() {
+            return;
+        }
+        let (name, level) = spells[idx].clone();
+        let (conc, dc) = {
+            let s = &self.doc.character.spells.spells[&name];
+            (s.concentration, self.doc.character.save_dc())
+        };
+        let cast = self.doc.try_edit(|c| {
+            if level > 0 && !c.spend_spell_slot(level) {
+                return Err(());
+            }
+            if conc {
+                c.start_concentration(&name, dc);
+            }
+            Ok(())
+        });
+        if cast.is_ok() {
+            self.report(
+                format!(
+                    "cast {name}{}",
+                    if conc {
+                        format!(" — concentrating (DC {dc})")
+                    } else {
+                        String::new()
+                    }
+                ),
+                cx,
+            );
+        } else {
+            self.report(format!("no L{level} slots left for {name}"), cx);
+        }
+    }
+
+    fn spells_section(&self, cx: &mut Context<Self>) -> AnyElement {
+        let c = &self.doc.character;
+        let prepared_caster = matches!(
+            c.casting_mechanic(),
+            Some(CastingMechanic::Prepared) | Some(CastingMechanic::PreparedWithSpellbook)
+        );
+        let slots = self.slot_rows();
+        let mut rows: Vec<_> = slots
+            .iter()
+            .enumerate()
+            .map(|(i, (name, level, pact))| {
+                let m = &c.meters.meters[name];
+                let pips: String = "\u{25cf}"
+                    .repeat((m.slot_number - m.spent) as usize)
+                    .chars()
+                    .chain("\u{25cb}".repeat(m.spent as usize).chars())
+                    .collect();
+                self.row(
+                    i,
+                    format!(
+                        "L{level} {} slots  {pips}  ({} left)",
+                        if *pact { "pact" } else { "classic" },
+                        m.slot_number - m.spent
+                    ),
+                    cx,
+                )
+            })
+            .collect();
+        let nslots = slots.len();
+        rows.extend(
+            self.spell_rows()
+                .iter()
+                .enumerate()
+                .map(|(j, (name, level))| {
+                    let s = &c.spells.spells[name];
+                    let mark = if *level == 0 {
+                        "c"
+                    } else if prepared_caster {
+                        if s.prepared { "P" } else { "-" }
+                    } else {
+                        "k"
+                    };
+                    self.row(
+                        nslots + j,
+                        format!(
+                            "[{mark}] {name}  L{level}{}{}",
+                            if s.concentration { "  conc" } else { "" },
+                            if s.ritual { "  ritual" } else { "" },
+                        ),
+                        cx,
+                    )
+                }),
+        );
+        div()
+            .flex()
+            .flex_col()
+            .gap_0()
+            .p_2()
+            .child(div().text_sm().child(format!(
+                "casting: {:?}   save DC {}   [P] prepared [k] known [c] cantrip",
+                c.casting_mechanic(),
+                c.save_dc()
+            )))
+            .children(rows)
+            .child(
+                div()
+                    .mt_2()
+                    .text_sm()
+                    .text_color(gpui::rgb(0x6c_70_86))
+                    .child("j/k select  space spend-slot/toggle-prepared  t cast"),
             )
             .into_any_element()
     }
@@ -1375,6 +1584,71 @@ mod tests {
         });
         assert_eq!(base, 19, "default 10 + 9 presses");
         assert_eq!(modifier, 4);
+    }
+
+    #[gpui::test]
+    fn spells_section_casts_and_toggles_prepared(cx: &mut TestAppContext) {
+        use blackletter_types::{
+            class::{Class, Level},
+            spells::Spell,
+        };
+        let (window, root) = open_sheet(cx);
+        let view = sheet(cx, &root);
+        view.update(cx, |v, _| {
+            v.doc.edit(|c| {
+                c.classes.classes.push(Class::new(Level(1), "wizard"));
+                c.ability_scores.wis.base = 16;
+                c.ability_modifier = Score::Wis;
+                c.sync_proficiency_bonus();
+                c.sync_spell_slots();
+                let sp = Spell {
+                    name: "shield".into(),
+                    level: 1,
+                    concentration: true,
+                    ..Spell::default()
+                };
+                c.spells.spells.insert("shield".into(), sp);
+            });
+        });
+        cx.simulate_keystrokes(window.into(), "] ] ] ]"); // Spells
+        cx.run_until_parked();
+        // Row 0 is the L1 slot meter (PHB full casters start with two):
+        // spend both, so the cast below must fail.
+        cx.simulate_keystrokes(window.into(), "space space");
+        cx.run_until_parked();
+        let spent = cx.read(|cx| view.read(cx).doc().character.meters.meters["spell_slot_1"].spent);
+        assert_eq!(spent, 2, "space spends slot pips");
+        // Move to the spell row and try to cast: no slots left.
+        cx.simulate_keystrokes(window.into(), "j t");
+        cx.run_until_parked();
+        assert!(
+            cx.read(|cx| view.read(cx).doc().character.concentrating.is_none()),
+            "a failed cast must not start concentration"
+        );
+        // Re-press on a full-spent meter restores all pips, then cast:
+        // shield concentrates at DC 13.
+        cx.simulate_keystrokes(window.into(), "k space");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "j t");
+        cx.run_until_parked();
+        let snap = cx.read(|cx| {
+            let c = &view.read(cx).doc().character;
+            (
+                c.meters.meters["spell_slot_1"].spent,
+                c.concentrating.as_ref().map(|k| k.spell_name.clone()),
+                c.concentrating.as_ref().map(|k| k.save_dc),
+            )
+        });
+        assert_eq!(snap.0, 1, "casting spends a slot");
+        assert_eq!(snap.1.as_deref(), Some("shield"));
+        assert_eq!(snap.2, Some(13), "8 + PB 2 + WIS 3");
+        // Prepared toggle on the spell row (wizard = PreparedWithSpellbook).
+        cx.simulate_keystrokes(window.into(), "space");
+        cx.run_until_parked();
+        assert!(
+            cx.read(|cx| view.read(cx).doc().character.spells.spells["shield"].prepared),
+            "space toggles prepared for prepared casters"
+        );
     }
 
     #[gpui::test]
