@@ -30,7 +30,7 @@ pub trait Grant {
     /// Where the grant comes from (for provenance display).
     fn grant_source(&self) -> Option<&Source>;
     /// The mechanical effects this grant contributes.
-    fn effects(&self) -> &[Effect];
+    fn effects(&self) -> Vec<Effect>;
 }
 
 impl Grant for Feature {
@@ -40,8 +40,28 @@ impl Grant for Feature {
     fn grant_source(&self) -> Option<&Source> {
         self.source.as_ref()
     }
-    fn effects(&self) -> &[Effect] {
-        &self.effects
+    fn effects(&self) -> Vec<Effect> {
+        self.effects.clone()
+    }
+}
+
+impl Grant for crate::race::Race {
+    fn grant_name(&self) -> String {
+        self.name.clone()
+    }
+    fn grant_source(&self) -> Option<&Source> {
+        self.source.as_ref()
+    }
+    fn effects(&self) -> Vec<Effect> {
+        let mut out: Vec<Effect> = self
+            .ability_bonuses
+            .iter()
+            .map(|b| Effect::AbilityScoreBonus(*b))
+            .collect();
+        if let Some(f) = &self.feature {
+            out.extend(f.effects.iter().cloned());
+        }
+        out
     }
 }
 
@@ -52,8 +72,8 @@ impl Grant for Feat {
     fn grant_source(&self) -> Option<&Source> {
         self.source.as_ref()
     }
-    fn effects(&self) -> &[Effect] {
-        self.effects()
+    fn effects(&self) -> Vec<Effect> {
+        self.effects().to_vec()
     }
 }
 
@@ -64,8 +84,8 @@ impl Grant for crate::Item {
     fn grant_source(&self) -> Option<&Source> {
         self.source.as_ref()
     }
-    fn effects(&self) -> &[Effect] {
-        self.effects()
+    fn effects(&self) -> Vec<Effect> {
+        self.effects().to_vec()
     }
 }
 
@@ -76,8 +96,8 @@ impl Grant for Trait {
     fn grant_source(&self) -> Option<&Source> {
         self.source.as_ref()
     }
-    fn effects(&self) -> &[Effect] {
-        self.effects()
+    fn effects(&self) -> Vec<Effect> {
+        self.effects().to_vec()
     }
 }
 
@@ -89,8 +109,8 @@ impl Grant for Condition {
         None
     }
     /// A condition's mechanics come from its kind, not its effect list.
-    fn effects(&self) -> &[Effect] {
-        &[]
+    fn effects(&self) -> Vec<Effect> {
+        Vec::new()
     }
 }
 
@@ -138,6 +158,13 @@ pub struct Modifiers {
     pub nonmagical_weapon_resistance: bool,
     /// Resistance to ALL damage types (e.g. Petrified).
     pub all_damage_resistant: bool,
+
+    /// Armor/armor-like AC formulas from grants: (base, dex cap).
+    /// `dex_cap: None` = Dex applies fully (unarmored/light);
+    /// `Some(0)` = heavy armor (no Dex). Highest base wins.
+    pub armor_bases: Vec<(i64, Option<i64>)>,
+    /// Scores whose modifier adds to AC (Barbarian/Monk unarmored defense).
+    pub ability_ac_bonuses: Vec<Score>,
 }
 
 impl Modifiers {
@@ -152,25 +179,31 @@ impl Modifiers {
                     self.score_bonuses.push((b.score, b.bonus.into()));
                 }
                 Effect::SkillBonus { skill, bonus } => {
-                    self.skill_bonuses.push((*skill, *bonus));
+                    self.skill_bonuses.push((skill, bonus));
                 }
                 Effect::SaveBonus { score, bonus } => {
-                    self.save_bonuses.push((*score, *bonus));
+                    self.save_bonuses.push((score, bonus));
                 }
-                Effect::AddProficiency(skill) => self.proficiencies.push(*skill),
-                Effect::Expertise(skill) => self.expertise.push(*skill),
-                Effect::Sense(sense) => self.senses.push(sense.clone()),
-                Effect::Meter(meter) => self.meters.push(meter.clone()),
-                Effect::Spell(spell) => self.spells.push(spell.name.clone()),
+                Effect::AddProficiency(skill) => self.proficiencies.push(skill),
+                Effect::Expertise(skill) => self.expertise.push(skill),
+                Effect::Sense(sense) => self.senses.push(sense),
+                Effect::Meter(meter) => self.meters.push(meter),
+                Effect::Spell(spell) => self.spells.push(spell.name),
                 Effect::ConditionImmunity(kind) => {
-                    self.condition_immunities.push(kind.clone());
+                    self.condition_immunities.push(kind);
                 }
-                Effect::Condition(c) => self.condition_kinds.push(c.kind.clone()),
-                Effect::Resistance(kind) => self.resistances.push(*kind),
-                Effect::Immunity(kind) => self.immunities.push(*kind),
-                Effect::Vulnerability(kind) => self.vulnerabilities.push(*kind),
+                Effect::Condition(c) => self.condition_kinds.push(c.kind),
+                Effect::Resistance(kind) => self.resistances.push(kind),
+                Effect::Immunity(kind) => self.immunities.push(kind),
+                Effect::Vulnerability(kind) => self.vulnerabilities.push(kind),
                 Effect::NonmagicalWeaponResistance => {
                     self.nonmagical_weapon_resistance = true;
+                }
+                Effect::ArmorClassBase { base, dex_cap } => {
+                    self.armor_bases.push((base, dex_cap));
+                }
+                Effect::AbilityAcBonus(score) => {
+                    self.ability_ac_bonuses.push(score);
                 }
                 // Not computable: health-per-level is tracked on HitPoints,
                 // Custom is display-only.
@@ -231,6 +264,18 @@ impl Modifiers {
                 self.immunities.push(DamageType::Poison);
             }
         }
+    }
+
+    /// The armor formula in effect: highest base wins (SRD: you can't
+    /// stack armors, and Mage Armor vs. worn armor just picks the better
+    /// formula). Default: unarmored (10, no Dex cap).
+    #[must_use]
+    pub fn best_armor(&self) -> (i64, Option<i64>) {
+        self.armor_bases
+            .iter()
+            .max_by_key(|(base, _)| *base)
+            .copied()
+            .unwrap_or((10, None))
     }
 
     /// How the character takes a damage type. `magical` says whether the

@@ -90,6 +90,7 @@ fn spell() {
         name: "Magic Missile".to_string(),
         desc: "Goes boom".to_string(),
         range: "12 toes".to_string(),
+        material: None,
         cast_time: "1 action".to_string(),
         concentration: false,
         duration: "Instant".to_string(),
@@ -146,10 +147,15 @@ fn health() {
 fn race() {
     let mut i = Interface::new();
     let script = r#"
-        race = "elf";
+        race = Race("elf");
+        race.desc = "fey";
+        gold = 25;
         "#;
     let c = i.execute(script, None).unwrap();
-    assert_eq!(c.race, "elf");
+    let race = c.race.unwrap();
+    assert_eq!(race.name, "elf");
+    assert_eq!(race.desc, "fey");
+    assert_eq!(c.gold, 25);
 }
 
 #[test]

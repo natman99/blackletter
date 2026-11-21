@@ -25,6 +25,7 @@ pub mod grant;
 pub mod language;
 pub mod lore;
 pub mod meter;
+pub mod race;
 pub mod saving_throws;
 pub mod senses;
 pub mod source;
@@ -45,6 +46,7 @@ use crate::{
     language::Languages,
     lore::Lore,
     meter::{Meter, Meters, RestoreTime},
+    race::Race,
     saving_throws::SavingThrows,
     senses::Senses,
     sheet::{
@@ -63,7 +65,9 @@ use crate::{
 
 pub struct Character {
     pub name: String,
-    pub race: String,
+    pub race: Option<Race>,
+    /// Gold pieces: pays consumed material component costs.
+    pub gold: i64,
     pub classes: Classes,
     pub initiative: Initiative,
     pub armor_class: ArmorClass,
@@ -124,7 +128,8 @@ impl Character {
             ability_modifier: Score::Str,
             meters: Default::default(),
             features: Default::default(),
-            race: "Elf".to_string(),
+            race: Some(Race::new("Elf")),
+            gold: 0,
             lore: Default::default(),
             walking_speed: Default::default(),
             languages: Default::default(),
@@ -194,6 +199,9 @@ impl Character {
         for t in &self.traits {
             m.absorb(t);
         }
+        if let Some(race) = &self.race {
+            m.absorb(race);
+        }
         for c in &self.conditions.conditions {
             m.absorb_condition(c);
         }
@@ -251,10 +259,29 @@ impl Character {
         !self.modifiers().cant_take_actions
     }
 
-    /// Armor class including granted AC bonuses.
+    /// Effective armor class: the best armor formula in effect
+    /// (unarmored 10 + Dex by default; armor/Mage Armor grants set bases
+    /// with Dex caps), plus the modifier of any scores granted via
+    /// `AbilityAcBonus` (Barbarian Con, Monk Wis), plus flat AC bonuses
+    /// (shields, rings). `armor_class.flat` overrides the formula outright
+    /// (monsters, house rules) but still receives the bonuses.
     #[must_use]
     pub fn armor_class_total(&self) -> i64 {
-        self.armor_class.get() + self.modifiers().ac
+        let m = self.modifiers();
+        let ability_ac: i64 = m
+            .ability_ac_bonuses
+            .iter()
+            .map(|s| self.effective_modifier(*s, &m))
+            .sum();
+        let base = match self.armor_class.flat {
+            Some(flat) => flat,
+            None => {
+                let (base, cap) = m.best_armor();
+                let dex = self.effective_modifier(Score::Dex, &m);
+                base + dex.min(cap.unwrap_or(i64::MAX))
+            }
+        };
+        base + m.ac + ability_ac
     }
 
     /// Walking speed including granted speed bonuses.
@@ -264,7 +291,12 @@ impl Character {
         if m.speed_zero {
             0
         } else {
-            let total = self.walking_speed.0 + m.speed;
+            let base = self
+                .race
+                .as_ref()
+                .and_then(|r| r.speed)
+                .unwrap_or(self.walking_speed.0);
+            let total = base + m.speed;
             if m.speed_halved { total / 2 } else { total }
         }
     }
@@ -705,6 +737,32 @@ impl Character {
         self.resistance_state(kind, magical).apply(amount)
     }
 
+    /// Whether the sheet can cover a spell's consumed material cost.
+    /// Free components (cost 0) and non-consumed components always pass
+    /// (the component-pouch abstraction: pay nothing, track nothing).
+    #[must_use]
+    pub fn can_afford_material(&self, spell: &spells::Spell) -> bool {
+        match &spell.material {
+            Some(m) if m.consumed && m.cost > 0 => self.gold >= m.cost,
+            _ => true,
+        }
+    }
+
+    /// Deduct a consumed material component's cost from gold. Returns
+    /// false and pays nothing if the cost can't be covered.
+    pub fn pay_material_cost(&mut self, spell: &spells::Spell) -> bool {
+        match &spell.material {
+            Some(m) if m.consumed && m.cost > 0 => {
+                if self.gold < m.cost {
+                    return false;
+                }
+                self.gold -= m.cost;
+                true
+            }
+            _ => true,
+        }
+    }
+
     /// Max hit points including exhaustion's level-4 halving.
     #[must_use]
     pub fn max_health_total(&self) -> i64 {
@@ -784,7 +842,8 @@ impl Default for Character {
     fn default() -> Self {
         Self {
             name: "name".to_string(),
-            race: "Elf".to_string(),
+            race: Some(Race::new("Elf")),
+            gold: 0,
             classes: Default::default(),
             initiative: Default::default(),
             armor_class: Default::default(),
@@ -1009,41 +1068,40 @@ impl Display for Score {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[cfg_attr(feature = "schema", derive(JsonSchema))]
-#[cfg_attr(feature = "serde", serde(default))]
 #[cfg_attr(feature = "rhai", derive(CustomType))]
-/// The armor class of a character.
-pub struct ArmorClass(
-    #[cfg_attr(feature = "rhai", rhai_type(set = Self::set, get = Self::get))] pub i64,
-);
+/// Armor class. Normally `flat` is `None` and AC is *derived*: best armor
+/// formula among grants (default unarmored 10 + Dex) + Dex + bonuses.
+/// Setting `flat` overrides the formula outright (monster statblocks,
+/// house rules); flat bonuses (shields, `AbilityAcBonus`) still apply.
+pub struct ArmorClass {
+    #[cfg_attr(feature = "rhai", rhai_type(set = Self::set, get = Self::get))]
+    pub flat: Option<i64>,
+}
 
 impl ArmorClass {
-    /// 10 + dex
-    fn new(scores: &AbilityScores) -> Self {
-        // safety: negative modifier can never be above 10.
-        Self(10 + scores.dex.modifier())
+    fn new(_scores: &AbilityScores) -> Self {
+        Self { flat: None }
     }
 
+    /// The flat override, or the unarmored default if derived.
     pub fn get(&self) -> i64 {
-        self.0
+        self.flat.unwrap_or(10)
     }
 
     pub fn set(&mut self, s: i64) {
-        self.0 = s;
-    }
-}
-
-impl Default for ArmorClass {
-    fn default() -> Self {
-        Self(10)
+        self.flat = Some(s);
     }
 }
 
 impl Display for ArmorClass {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0)
+        match self.flat {
+            Some(v) => write!(f, "{v}"),
+            None => write!(f, "derived"),
+        }
     }
 }
 
@@ -1097,8 +1155,9 @@ impl Display for WalkingSpeed {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::feature::{Effect, Feature};
+    use crate::feature::{AbilityScoreBonus, Effect, Feature};
     use crate::meter::{Meter, RestoreTime};
+    use crate::senses::Sense;
     use std::str::FromStr;
 
     #[test]
@@ -1779,5 +1838,164 @@ mod tests {
             ResistanceState::Normal
         );
         assert_eq!(sheet.apply_resistance(DamageType::Fire, true, 10), 10);
+    }
+
+    // ---- armor class ----
+
+    fn armored_item(name: &str, effects: Vec<Effect>) -> Item {
+        let mut item = Item::new(name.to_string());
+        for e in effects {
+            item.add(e);
+        }
+        item
+    }
+
+    #[test]
+    fn test_armor_class_derivation_srd() {
+        let mut sheet = Character::default(); // Dex 10 (+0)
+        sheet.ability_scores.dex = AbilityScore::new(14, 0); // +2
+        // Unarmored: 10 + Dex.
+        assert_eq!(sheet.armor_class_total(), 12);
+
+        // Leather: 11 + Dex (uncapped).
+        sheet.inventory.0.insert(
+            "Leather Armor".to_string(),
+            armored_item(
+                "Leather Armor",
+                vec![Effect::ArmorClassBase {
+                    base: 11,
+                    dex_cap: None,
+                }],
+            ),
+        );
+        sheet.equip("Leather Armor");
+        assert_eq!(sheet.armor_class_total(), 13);
+
+        // Shield: +2 flat, stacks with armor.
+        sheet.inventory.0.insert(
+            "Shield".to_string(),
+            armored_item("Shield", vec![Effect::AcBonus(2)]),
+        );
+        sheet.equip("Shield");
+        assert_eq!(sheet.armor_class_total(), 15);
+
+        // Chain mail: 16, no Dex (heavy). Highest base wins over leather.
+        sheet.inventory.0.insert(
+            "Chain Mail".to_string(),
+            armored_item(
+                "Chain Mail",
+                vec![Effect::ArmorClassBase {
+                    base: 16,
+                    dex_cap: Some(0),
+                }],
+            ),
+        );
+        sheet.equip("Chain Mail");
+        assert_eq!(sheet.armor_class_total(), 18); // 16 + 0 + 2
+
+        // Unequipping chain falls back to leather's formula.
+        sheet.remove_grant("chain mail");
+        assert_eq!(sheet.armor_class_total(), 15);
+
+        // Flat override (statblock/house rule): formula bypassed, bonuses
+        // still apply.
+        sheet.armor_class.set(15);
+        assert_eq!(sheet.armor_class_total(), 17); // 15 + shield 2
+        sheet.armor_class.flat = None; // back to derived
+        assert_eq!(sheet.armor_class_total(), 15);
+    }
+
+    #[test]
+    fn test_unarmored_defense_features() {
+        // Monk-style: 10 + Dex + Wis.
+        let mut sheet = Character::default();
+        sheet.ability_scores.dex = AbilityScore::new(16, 0); // +3
+        sheet.ability_scores.wis = AbilityScore::new(14, 0); // +2
+        assert_eq!(sheet.armor_class_total(), 13); // unarmored 10 + Dex
+        sheet.add_feature(Feature {
+            name: "Unarmored Defense".to_string(),
+            effects: vec![Effect::AbilityAcBonus(Score::Wis)],
+            ..Feature::default()
+        });
+        assert_eq!(sheet.armor_class_total(), 15); // + Wis
+        sheet.remove_grant("unarmored defense");
+        assert_eq!(sheet.armor_class_total(), 13);
+    }
+
+    // ---- race ----
+
+    #[test]
+    fn test_race_grants_are_lossless() {
+        let mut sheet = Character::default();
+        assert_eq!(sheet.ability_modifier_for(Score::Dex), 0);
+        sheet.race = Some(Race {
+            name: "Elf".to_string(),
+            ability_bonuses: vec![AbilityScoreBonus {
+                score: Score::Dex,
+                bonus: 2,
+            }],
+            feature: Some(Feature {
+                name: "Darkvision".to_string(),
+                effects: vec![Effect::Sense(Sense::DarkVision)],
+                ..Feature::default()
+            }),
+            ..Race::default()
+        });
+        assert_eq!(sheet.ability_modifier_for(Score::Dex), 1); // +2 score = +1 mod
+        assert!(sheet.modifiers().has_sense(&Sense::DarkVision));
+
+        // Racial speed overrides the sheet default.
+        sheet.race = Some(Race {
+            name: "Dwarf".to_string(),
+            speed: Some(25),
+            ..Race::default()
+        });
+        assert_eq!(sheet.speed_total(), 25);
+        assert!(!sheet.modifiers().has_sense(&Sense::DarkVision));
+
+        // Removing the race removes everything.
+        sheet.race = None;
+        assert_eq!(sheet.ability_modifier_for(Score::Dex), 0);
+        assert_eq!(sheet.speed_total(), 30);
+    }
+
+    // ---- material components ----
+
+    #[test]
+    fn test_material_component_costs() {
+        use crate::spells::{MaterialComponent, Spell};
+        let mut sheet = Character::default();
+        assert_eq!(sheet.gold, 0);
+
+        // Identify-style: 100 gp pearl, consumed.
+        let identify = Spell {
+            name: "identify".to_string(),
+            material: Some(MaterialComponent {
+                name: "a pearl worth at least 100 gp".to_string(),
+                cost: 100,
+                consumed: true,
+            }),
+            ..Spell::default()
+        };
+        assert!(!sheet.can_afford_material(&identify));
+        assert!(!sheet.pay_material_cost(&identify));
+        assert_eq!(sheet.gold, 0); // failed payment pays nothing
+        sheet.gold = 150;
+        assert!(sheet.can_afford_material(&identify));
+        assert!(sheet.pay_material_cost(&identify));
+        assert_eq!(sheet.gold, 50);
+
+        // Pouch components (cost 0 / not consumed) are free by design.
+        let fireball = Spell {
+            name: "fireball".to_string(),
+            material: Some(MaterialComponent {
+                name: "a tiny ball of bat guano and sulfur".to_string(),
+                cost: 0,
+                consumed: false,
+            }),
+            ..Spell::default()
+        };
+        assert!(sheet.pay_material_cost(&fireball));
+        assert_eq!(sheet.gold, 50);
     }
 }

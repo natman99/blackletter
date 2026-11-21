@@ -102,6 +102,7 @@ impl Interface {
         let Character {
             name,
             race,
+            gold,
             classes,
             initiative,
             armor_class,
@@ -126,14 +127,21 @@ impl Interface {
             spell_slots_override,
         } = Character::default();
 
-        let armor_class = armor_class.0;
+        let armor_class = armor_class.flat;
         let walking_speed = walking_speed.0;
 
         scope.push("name", name);
-        scope.push("race", race);
+        match race {
+            Some(r) => scope.push("race", r),
+            None => scope.push("race", ()),
+        };
+        scope.push("gold", gold);
         scope.push("classes", classes);
         scope.push("initiative", initiative);
-        scope.push("armor_class", armor_class);
+        match armor_class {
+            Some(v) => scope.push("armor_class", v),
+            None => scope.push("armor_class", ()),
+        };
         scope.push("health", health);
         scope.push("inventory", inventory);
         scope.push("ability_scores", ability_scores);
@@ -152,7 +160,10 @@ impl Interface {
         scope.push("saving_throws", saving_throws);
         scope.push("death_saves", death_saves);
         scope.push("exhaustion", exhaustion as i64);
-        scope.push("spell_slots_override", spell_slots_override);
+        match spell_slots_override {
+            Some(v) => scope.push("spell_slots_override", v),
+            None => scope.push("spell_slots_override", ()),
+        };
 
         // We should run automated additions including adding meters, abilities, calculating health, and applying item stats.
         scope.push("calculate", true);
@@ -178,6 +189,7 @@ impl Interface {
         let Character {
             name,
             race,
+            gold,
             classes,
             initiative,
             armor_class,
@@ -202,7 +214,7 @@ impl Interface {
             spell_slots_override,
         } = character;
 
-        let armor_class = armor_class.0;
+        let armor_class = armor_class.flat;
         let walking_speed = walking_speed.0;
 
         scope.push("str", ability_scores.str);
@@ -213,10 +225,17 @@ impl Interface {
         scope.push("cha", ability_scores.cha);
 
         scope.push("name", name);
-        scope.push("race", race);
+        match race {
+            Some(r) => scope.push("race", r),
+            None => scope.push("race", ()),
+        };
+        scope.push("gold", gold);
         scope.push("classes", classes);
         scope.push("initiative", initiative);
-        scope.push("armor_class", armor_class);
+        match armor_class {
+            Some(v) => scope.push("armor_class", v),
+            None => scope.push("armor_class", ()),
+        };
         scope.push("health", health);
         scope.push("inventory", inventory);
         scope.push("ability_scores", ability_scores);
@@ -235,7 +254,10 @@ impl Interface {
         scope.push("saving_throws", saving_throws);
         scope.push("death_saves", death_saves);
         scope.push("exhaustion", exhaustion as i64);
-        scope.push("spell_slots_override", spell_slots_override);
+        match spell_slots_override {
+            Some(v) => scope.push("spell_slots_override", v),
+            None => scope.push("spell_slots_override", ()),
+        };
     }
 
     fn extract_scope(&self, scope: &mut Scope) -> anyhow::Result<Character> {
@@ -249,14 +271,33 @@ impl Interface {
                     .ok_or_else(|| anyhow::anyhow!("failed to cast variable: {}", $label))
             }};
         }
+        // rhai represents `None` as `()` but won't cast a present value
+        // back into `Option<T>`, so optional variables need a unit check
+        // before the cast.
+        macro_rules! extract_opt {
+            ($key:expr, $label:expr, $ty:ty) => {{
+                let var = scope
+                    .get_mut($key)
+                    .ok_or_else(|| anyhow::anyhow!("missing variable: {}", $label))?;
+                let value = var.take();
+                if value.is_unit() {
+                    Ok::<_, anyhow::Error>(None)
+                } else {
+                    Ok(Some(value.try_cast::<$ty>().ok_or_else(|| {
+                        anyhow::anyhow!("failed to cast variable: {}", $label)
+                    })?))
+                }
+            }};
+        }
 
         let name = extract!("name", "name")?;
-        let race = extract!("race", "race")?;
+        let race = extract_opt!("race", "race", blackletter_types::race::Race)?;
+        let gold = extract!("gold", "gold")?;
         let classes = extract!("classes", "classes")?;
         let initiative = extract!("initiative", "initiative")?;
-        let armor_class_raw: i64 = extract!("armor_class", "armor_class")?;
-        let mut armor_class = ArmorClass(armor_class_raw);
-        armor_class.set(armor_class_raw);
+        let armor_class = ArmorClass {
+            flat: extract_opt!("armor_class", "armor_class", i64)?,
+        };
 
         let health = extract!("health", "health")?;
         let inventory = extract!("inventory", "inventory")?;
@@ -278,11 +319,13 @@ impl Interface {
         let death_saves = extract!("death_saves", "death_saves")?;
         let exhaustion_raw: i64 = extract!("exhaustion", "exhaustion")?;
         let exhaustion = exhaustion_raw as u8;
-        let spell_slots_override = extract!("spell_slots_override", "spell_slots_override")?;
+        let spell_slots_override =
+            extract_opt!("spell_slots_override", "spell_slots_override", Vec<i64>)?;
 
         Ok(Character {
             name,
             race,
+            gold,
             classes,
             initiative,
             armor_class,
@@ -332,6 +375,10 @@ fn register_engine_types(engine: &mut Engine) {
     engine.build_type::<Feat>();
     engine.build_type::<Trait>();
     engine.build_type::<blackletter_types::death::DeathSaves>();
+    engine.build_type::<blackletter_types::race::Race>();
+    engine.register_fn("Race", |name: rhai::ImmutableString| {
+        blackletter_types::race::Race::new(&name)
+    });
 
     engine.register_indexer_get_set(Classes::get, Classes::set);
 }

@@ -84,6 +84,12 @@ pub enum Effect {
     /// Resistance to bludgeoning, piercing, and slashing from nonmagical
     /// attacks (the common SRD trait).
     NonmagicalWeaponResistance,
+    /// Sets an armor-class formula: base AC + Dex modifier capped by
+    /// `dex_cap` (`None` = uncapped, `Some(0)` = heavy armor). Worn armor,
+    /// Mage Armor, and similar features all grant this; highest base wins.
+    ArmorClassBase { base: i64, dex_cap: Option<i64> },
+    /// The modifier of this score adds to AC (Barbarian: Con, Monk: Wis).
+    AbilityAcBonus(Score),
     /// Homebrew effect with no mechanical interpretation; shown, not computed.
     Custom(String),
 }
@@ -113,6 +119,13 @@ impl Display for Effect {
             Effect::Vulnerability(kind) => format!("Vulnerable to {kind:?}"),
             Effect::NonmagicalWeaponResistance => {
                 "Resistant to nonmagical weapon damage".to_string()
+            }
+            Effect::ArmorClassBase { base, dex_cap } => match dex_cap {
+                Some(cap) => format!("AC {base} + Dex (max {cap})"),
+                None => format!("AC {base} + Dex"),
+            },
+            Effect::AbilityAcBonus(score) => {
+                format!("AC includes {score} modifier")
             }
             Effect::Custom(s) => s.clone(),
         };
