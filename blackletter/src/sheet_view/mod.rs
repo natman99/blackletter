@@ -155,7 +155,7 @@ const SCORE_ROWS: [Score; 6] = [
 ];
 
 /// The action rows in the Combat section.
-const COMBAT_ROWS: usize = 8;
+const COMBAT_ROWS: usize = 10;
 const COMBAT_LABELS: [&str; COMBAT_ROWS] = [
     "apply damage (amount via d)",
     "heal (amount via enter)",
@@ -165,6 +165,8 @@ const COMBAT_LABELS: [&str; COMBAT_ROWS] = [
     "exhaustion (+/-)",
     "short rest (space)",
     "long rest (space)",
+    "spend hit die (space)",
+    "roll death save (space)",
 ];
 
 pub struct SheetView {
@@ -390,6 +392,9 @@ impl SheetView {
                 return Ok::<_, ()>(None);
             }
             let dealt = c.apply_resistance(kind, true, amount);
+            if c.check_instant_death(dealt) {
+                return Ok(Some((dealt, None)));
+            }
             c.health.current = (c.health.current - dealt).max(0);
             let conc = c
                 .concentration_save(&mut rand::rng(), dealt)
@@ -398,10 +403,14 @@ impl SheetView {
         });
         match outcome {
             Ok(Some((dealt, conc))) => {
-                let mut line = format!(
-                    "{amount} {:?} -> {dealt} dealt (HP {})",
-                    kind, self.doc.character.health.current
-                );
+                let mut line = if self.doc.character.is_dead() {
+                    format!("{amount} {:?} -> {dealt} dealt — INSTANT DEATH", kind)
+                } else {
+                    format!(
+                        "{amount} {:?} -> {dealt} dealt (HP {})",
+                        kind, self.doc.character.health.current
+                    )
+                };
                 if let Some((name, broken)) = conc {
                     line += &format!(
                         "; concentration on {name} {}",
@@ -428,6 +437,10 @@ impl SheetView {
     }
 
     fn on_roll_death_save(&mut self, _: &RollDeathSave, _: &mut Window, cx: &mut Context<Self>) {
+        self.do_death_save(cx);
+    }
+
+    fn do_death_save(&mut self, cx: &mut Context<Self>) {
         let outcome = self.doc.edit_return(|c| {
             let (roll, outcome) = c.roll_death_save(&mut rand::rng());
             (roll.natural, outcome)
@@ -550,7 +563,44 @@ impl SheetView {
             }
             6 => self.do_short_rest(cx),
             7 => self.do_long_rest(cx),
+            8 => self.do_spend_hit_die(cx),
+            9 => self.do_death_save(cx),
             _ => {}
+        }
+    }
+
+    /// Spend one hit die from the first class that has dice left.
+    fn do_spend_hit_die(&mut self, cx: &mut Context<Self>) {
+        let idx = self
+            .doc
+            .character
+            .classes
+            .classes
+            .iter()
+            .position(|k| k.healing_die_remaining > 0);
+        let Some(idx) = idx else {
+            self.report("no hit dice remaining", cx);
+            return;
+        };
+        let healed = self.doc.edit_return(|c| c.spend_hit_die(idx, true));
+        match healed {
+            Some(amount) => {
+                let c = &self.doc.character;
+                self.report(
+                    format!(
+                        "hit die spent: +{amount} HP ({} / {}){}",
+                        c.health.current,
+                        c.max_health_total(),
+                        if c.classes.classes[idx].healing_die_remaining == 0 {
+                            " — last die"
+                        } else {
+                            ""
+                        }
+                    ),
+                    cx,
+                );
+            }
+            None => self.report("at max HP — no die spent", cx),
         }
     }
 
@@ -1412,6 +1462,27 @@ impl SheetView {
                     },
                     4 => format!("  (gold {})", c.gold),
                     5 => format!("  (level {})", c.exhaustion),
+                    8 => {
+                        let rem: i64 = c
+                            .classes
+                            .classes
+                            .iter()
+                            .map(|k| k.healing_die_remaining)
+                            .sum();
+                        let tot: i64 = c.classes.classes.iter().map(|k| k.max_healing_die).sum();
+                        let die = c
+                            .classes
+                            .classes
+                            .first()
+                            .map_or(String::new(), |k| format!(" d{}", k.hit_dice.max()));
+                        format!("  ({rem}/{tot}{die})")
+                    }
+                    9 => format!(
+                        "  ({}S/{}F{})",
+                        c.death_saves.successes,
+                        c.death_saves.failures,
+                        if c.death_saves.stable { ", stable" } else { "" }
+                    ),
                     _ => String::new(),
                 };
                 self.row(i, format!("{label}{detail}"), cx)
@@ -1857,6 +1928,84 @@ mod tests {
         assert!(
             cx.read(|cx| view.read(cx).doc().character.spells.spells["shield"].prepared),
             "space toggles prepared for prepared casters"
+        );
+    }
+
+    #[gpui::test]
+    fn massive_overflow_kills_instantly(cx: &mut TestAppContext) {
+        let (window, root) = open_sheet(cx);
+        let view = sheet(cx, &root);
+        cx.simulate_keystrokes(window.into(), "] ] ]"); // Combat
+        cx.run_until_parked();
+        // Default sheet: 10 max HP. 30 damage -> overflow 20 >= 10: dead.
+        cx.simulate_keystrokes(window.into(), "d 3 0 enter");
+        cx.run_until_parked();
+        assert!(cx.read(|cx| view.read(cx).doc().character.is_dead()));
+        assert_eq!(
+            cx.read(|cx| view.read(cx).doc().character.health.current),
+            0
+        );
+        // Undo revives the whole event.
+        cx.simulate_keystrokes(window.into(), "ctrl-z");
+        cx.run_until_parked();
+        assert!(!cx.read(|cx| view.read(cx).doc().character.is_dead()));
+        assert_eq!(
+            cx.read(|cx| view.read(cx).doc().character.health.current),
+            10
+        );
+    }
+
+    #[gpui::test]
+    fn combat_hit_dice_and_death_saves(cx: &mut TestAppContext) {
+        let (window, root) = open_sheet(cx);
+        let view = sheet(cx, &root);
+        cx.simulate_keystrokes(window.into(), "] ] ]"); // Combat
+        cx.run_until_parked();
+        // Damage down to 4/10, then spend the single d10 hit die.
+        cx.simulate_keystrokes(window.into(), "d 4 enter");
+        cx.run_until_parked();
+        assert_eq!(
+            cx.read(|cx| view.read(cx).doc().character.health.current),
+            6
+        );
+        // Row 8 = spend hit die (j x8 from row 0).
+        cx.simulate_keystrokes(window.into(), "j j j j j j j j");
+        cx.run_until_parked();
+        assert_eq!(cx.read(|cx| view.read(cx).sel), 8);
+        cx.simulate_keystrokes(window.into(), "space");
+        cx.run_until_parked();
+        let (hp, dice) = cx.read(|cx| {
+            let c = &view.read(cx).doc().character;
+            (c.health.current, c.classes.classes[0].healing_die_remaining)
+        });
+        assert!(hp > 6, "hit die healed ({hp})");
+        assert_eq!(dice, 0, "the L1 die is spent");
+        cx.simulate_keystrokes(window.into(), "space");
+        cx.run_until_parked();
+        assert_eq!(
+            cx.read(|cx| view.read(cx).doc().character.classes.classes[0].healing_die_remaining),
+            0,
+            "no dice left to spend"
+        );
+        // Row 9 = death save roll (only meaningful while down; the engine
+        // still tracks pips, and long rest clears them).
+        cx.simulate_keystrokes(window.into(), "j");
+        cx.simulate_keystrokes(window.into(), "space");
+        cx.run_until_parked();
+        let ds = cx.read(|cx| view.read(cx).doc().character.death_saves);
+        assert!(ds.successes + ds.failures > 0, "a save was recorded");
+        cx.simulate_keystrokes(window.into(), "S"); // shift-S long rest
+        cx.run_until_parked();
+        let ds = cx.read(|cx| view.read(cx).doc().character.death_saves);
+        assert_eq!(
+            ds.successes + ds.failures,
+            0,
+            "long rest clears death saves"
+        );
+        assert_eq!(
+            cx.read(|cx| view.read(cx).doc().character.classes.classes[0].healing_die_remaining),
+            1,
+            "long rest regains the spent die"
         );
     }
 

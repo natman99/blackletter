@@ -135,12 +135,17 @@ fn main() {
         Meter::new("sorcery_point".into(), 5, RestoreTime::default()),
     );
 
-    // Features (text lives in the vault; names ride the sheet).
-    for name in [
-        "Restore Balance",
-        "Metamagic: Heightened Spell",
-        "Metamagic: Quickened Spell",
-    ] {
+    // Features (text lives in the vault; names ride the sheet). Restore
+    // Balance carries its uses meter: PB-scaled, long-rest restore — the
+    // Effect::Meter grant wiring materializes it into live meters.
+    let mut restore_balance = Meter::new("restore_balance".into(), 0, RestoreTime::default());
+    restore_balance.pb_scaled = true;
+    c.add_feature(blackletter_types::feature::Feature {
+        name: "Restore Balance".into(),
+        source: None,
+        effects: vec![blackletter_types::feature::Effect::Meter(restore_balance)],
+    });
+    for name in ["Metamagic: Heightened Spell", "Metamagic: Quickened Spell"] {
         c.features.inner.push(blackletter_types::feature::Feature {
             name: name.into(),
             source: None,

@@ -238,7 +238,8 @@ fn meter() {
                 short_rest: true,
                 long_rest: true
             },
-            source: Some(Source::Single("cake power".to_string()))
+            source: Some(Source::Single("cake power".to_string())),
+            pb_scaled: false,
         }
     );
 }
@@ -509,7 +510,8 @@ fn meter_functions() {
                 short_rest: true,
                 long_rest: true
             },
-            source: Some(Source::Single("subclass feature".to_string()))
+            source: Some(Source::Single("subclass feature".to_string())),
+            pb_scaled: false,
         }
     );
 }

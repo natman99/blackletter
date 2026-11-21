@@ -326,17 +326,21 @@ impl Character {
         }
     }
 
-    /// Add a feature grant.
+    /// Add a feature grant (its `Effect::Meter` grants materialize into
+    /// live meters immediately).
     pub fn add_feature(&mut self, feature: crate::feature::Feature) {
         self.features.inner.push(feature);
+        self.sync_grant_meters();
     }
     /// Add a feat grant.
     pub fn add_feat(&mut self, feat: Feat) {
         self.feats.push(feat);
+        self.sync_grant_meters();
     }
     /// Add a trait grant.
     pub fn add_trait(&mut self, trait_: Trait) {
         self.traits.push(trait_);
+        self.sync_grant_meters();
     }
     /// Add a condition (respects condition immunities; returns whether it
     /// was applied).
@@ -703,6 +707,20 @@ impl Character {
         (result, outcome)
     }
 
+    /// SRD instant death (Wiki/07 combat.md:430): when damage reduces you
+    /// to 0 hit points and the REMAINING damage equals or exceeds your hit
+    /// point maximum, you die outright. Call with the damage dealt while
+    /// still above 0 HP; on a massive hit this zeroes health and sets three
+    /// failures (`is_dead()` becomes true). Returns whether it killed.
+    pub fn check_instant_death(&mut self, dealt: i64) -> bool {
+        if self.health.current > 0 && dealt - self.health.current >= self.max_health_total() {
+            self.health.current = 0;
+            self.death_saves.failures = 3;
+            return true;
+        }
+        false
+    }
+
     /// Damage taken at 0 HP: one death save failure (two on a crit), or
     /// instant death if the damage meets or exceeds max HP. Also breaks
     /// stability.
@@ -804,6 +822,33 @@ impl Character {
     /// set value is treated as a house-rules override until the next sync.
     pub fn sync_proficiency_bonus(&mut self) {
         self.skills.proficiency_bonus = self.classes.proficiency_bonus();
+        // PB-scaled grant meters ("uses = your proficiency bonus") follow.
+        self.sync_grant_meters();
+    }
+
+    /// Materialize `Effect::Meter` grants (features/feats/traits/items) into
+    /// the live `meters` map — the wiring that makes a feat or subclass
+    /// feature's resource pool spendable and rest-restorable. Spent state
+    /// persists across syncs; slot counts follow the grant, and
+    /// `pb_scaled` meters track proficiency bonus. Meters left behind by a
+    /// removed grant linger (they may carry manual edits); delete them
+    /// directly from `meters` if unwanted.
+    pub fn sync_grant_meters(&mut self) {
+        for grant in self.modifiers().meters {
+            let entry = self
+                .meters
+                .meters
+                .entry(grant.name.clone())
+                .or_insert_with(|| grant.clone());
+            entry.restore = grant.restore;
+            entry.pb_scaled = grant.pb_scaled;
+            if grant.pb_scaled {
+                entry.slot_number = self.skills.proficiency_bonus.max(0) as u32;
+            } else {
+                entry.slot_number = grant.slot_number;
+            }
+            entry.spent = entry.spent.min(entry.slot_number);
+        }
     }
 
     /// Spend one hit die from the given class to heal (SRD short-rest
@@ -1840,6 +1885,49 @@ mod tests {
     }
 
     #[test]
+    fn grant_meters_materialize_and_scale_with_pb() {
+        use crate::sheet::meter::RestoreTime;
+        let mut c = Character::new(
+            "Test".into(),
+            5,
+            HitPoints {
+                current: 34,
+                max: 34,
+                level_bonus: 0,
+                bonus: 0,
+            },
+            ClassType::Sorcerer,
+            AbilityScores::default(),
+        );
+        c.sync_proficiency_bonus();
+        let mut meter = Meter::new("restore_balance".into(), 0, RestoreTime::default());
+        meter.pb_scaled = true;
+        c.add_feature(crate::feature::Feature {
+            name: "Restore Balance".into(),
+            source: None,
+            effects: vec![crate::feature::Effect::Meter(meter)],
+        });
+        // PB-scaled: 3 uses at level 5, and the long-rest restore flag rides.
+        let m = c.meters.meters.get("restore_balance").unwrap();
+        assert_eq!(m.slot_number, 3);
+        assert!(m.restore.long_rest);
+        // Spend all three, long rest refills them.
+        for _ in 0..3 {
+            assert!(c.meters.meters["restore_balance"].check());
+            c.meters.meters.get_mut("restore_balance").unwrap().spend();
+        }
+        assert!(!c.meters.meters["restore_balance"].check());
+        c.long_rest();
+        assert_eq!(c.meters.meters.get("restore_balance").unwrap().spent, 0);
+        // Level 9: PB rises to +4, the meter follows, spent state survives.
+        c.classes.classes[0].level = Level(9);
+        c.sync_proficiency_bonus();
+        assert_eq!(
+            c.meters.meters.get("restore_balance").unwrap().slot_number,
+            4
+        );
+    }
+    #[test]
     fn test_spell_slots_full_caster() {
         let sheet = leveled(ClassType::Cleric, 5);
         assert_eq!(sheet.caster_level(), 5);
@@ -1930,6 +2018,22 @@ mod tests {
         sheet.damage_while_down(1, true); // crit: two failures
         assert_eq!(sheet.death_saves.failures, 3);
         assert!(sheet.is_dead());
+
+        // SRD instant death from FULL HP: overflow >= max HP kills outright
+        // (Wiki/07 combat.md:434 example: 12 max, at 6, takes 18 -> dead).
+        let mut c = leveled(ClassType::Fighter, 1);
+        c.health.max = 12;
+        c.health.current = 6;
+        assert!(c.check_instant_death(18));
+        assert!(c.is_dead());
+        let mut c = leveled(ClassType::Fighter, 1);
+        c.health.max = 12;
+        c.health.current = 6;
+        assert!(
+            !c.check_instant_death(17),
+            "overflow 11 < max 12: down, not dead"
+        );
+        assert_eq!(c.health.current, 6, "non-lethal check mutates nothing");
 
         // Massive damage (>= max HP): instant death.
         let mut sheet2 = leveled(ClassType::Fighter, 1);

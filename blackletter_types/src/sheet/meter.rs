@@ -31,6 +31,11 @@ pub struct Meter {
 
     pub restore: RestoreTime,
     pub source: Option<Source>,
+    /// Slot count tracks the sheet's proficiency bonus (synced by
+    /// `Character::sync_grant_meters`); `slot_number` is the base count
+    /// for non-scaled meters. Subclass features phrased "a number of times
+    /// equal to your proficiency bonus" set this flag.
+    pub pb_scaled: bool,
 }
 
 impl Meter {
@@ -41,6 +46,7 @@ impl Meter {
             slot_number,
             spent: 0,
             source: None,
+            pb_scaled: false,
         }
     }
 
