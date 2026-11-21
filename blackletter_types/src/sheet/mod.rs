@@ -83,7 +83,7 @@ impl Character {
         class: ClassType,
         ability_scores: AbilityScores,
     ) -> Self {
-        Self {
+        let mut sheet = Self {
             name,
             health,
             classes: Classes {
@@ -113,7 +113,9 @@ impl Character {
             conditions: Default::default(),
             ability_scores,
             saving_throws: Default::default(),
-        }
+        };
+        sheet.sync_proficiency_bonus();
+        sheet
     }
 
     pub fn ability_modifier(&self) -> i64 {
@@ -136,6 +138,56 @@ impl Character {
 
     pub fn initiative(&self) -> i64 {
         self.initiative.get(&self.ability_scores)
+    }
+
+    /// Refresh `skills.proficiency_bonus` from the SRD table for the
+    /// character's total level. Call after any level change; a manually
+    /// set value is treated as a house-rules override until the next sync.
+    pub fn sync_proficiency_bonus(&mut self) {
+        self.skills.proficiency_bonus = self.classes.proficiency_bonus();
+    }
+
+    /// Spend one hit die from the given class to heal (SRD short-rest
+    /// healing; the player chooses each die). `roll` = roll the die,
+    /// otherwise take the average. Returns the amount healed.
+    pub fn spend_hit_die(&mut self, class_index: usize, roll: bool) -> Option<i64> {
+        let before = self.health.current;
+        self.classes.heal(
+            class_index,
+            roll,
+            &mut self.health,
+            &self.ability_scores,
+        );
+        let healed = self.health.current - before;
+        (healed > 0).then_some(healed)
+    }
+
+    /// SRD short rest: meters that restore on a short rest refill.
+    /// Hit dice spending is a separate player choice (`spend_hit_die`).
+    pub fn short_rest(&mut self) {
+        for m in self.meters.meters.values_mut() {
+            if m.restore.short_rest {
+                m.restore_all();
+            }
+        }
+    }
+
+    /// SRD (2014) long rest: regain all lost hit points, regain spent hit
+    /// dice up to half your total (rounded up), and refill long-rest meters.
+    pub fn long_rest(&mut self) {
+        self.health.heal(self.health.max);
+        for c in &mut self.classes.classes {
+            let spent = (c.max_healing_die - c.healing_die_remaining).max(0);
+            let regained = spent.min((c.max_healing_die + 1) / 2);
+            c.healing_die_remaining += regained;
+        }
+        for m in self.meters.meters.values_mut() {
+            // A short-rest resource also recovers after a long rest
+            // (SRD: "short or long rest"); both-false meters never auto-restore.
+            if m.restore.long_rest || m.restore.short_rest {
+                m.restore_all();
+            }
+        }
     }
 
     pub fn passive_senses(&self) -> PassiveSenses {
@@ -444,6 +496,7 @@ impl Display for WalkingSpeed {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::meter::{Meter, RestoreTime};
     use std::str::FromStr;
 
     #[test]
@@ -466,5 +519,100 @@ mod tests {
         // Investigation scales from Intelligence, not Perception.
         sheet.ability_scores.int.base = 12;
         assert_eq!(sheet.passive_senses().investigation, 11);
+    }
+
+    #[test]
+    fn test_sync_proficiency_bonus() {
+        let mut sheet = Character::new(
+            "A".to_string(),
+            5,
+            HitPoints::new(10),
+            ClassType::Fighter,
+            AbilityScores::default(),
+        );
+        assert_eq!(sheet.skills.proficiency_bonus, 3); // level 5 -> +3
+        sheet.classes[0].level = Level(17);
+        sheet.sync_proficiency_bonus();
+        assert_eq!(sheet.skills.proficiency_bonus, 6);
+    }
+
+    #[test]
+    fn test_long_rest_srd_2014() {
+        let mut sheet = Character::new(
+            "A".to_string(),
+            5,
+            HitPoints::new(50),
+            ClassType::Fighter,
+            AbilityScores::default(),
+        );
+        for _ in 0..5 {
+            sheet.spend_hit_die(0, false);
+        }
+        sheet.health.hit(30);
+        assert_eq!(sheet.health.current, 20);
+        assert_eq!(sheet.classes[0].healing_die_remaining, 0);
+
+        sheet.meters.meters.insert(
+            "ki".to_string(),
+            Meter::new(
+                "ki".to_string(),
+                3,
+                RestoreTime {
+                    short_rest: true,
+                    long_rest: false,
+                },
+            ),
+        );
+        sheet.meters.meters.insert(
+            "slots".to_string(),
+            Meter::new("slots".to_string(), 4, RestoreTime::default()),
+        );
+        for _ in 0..3 {
+            sheet.meters.meters.get_mut("ki").unwrap().spend();
+        }
+        for _ in 0..4 {
+            sheet.meters.meters.get_mut("slots").unwrap().spend();
+        }
+
+        sheet.long_rest();
+        assert_eq!(sheet.health.current, 50); // full HP
+        // Half of 5 total dice, rounded up: 3 regained.
+        assert_eq!(sheet.classes[0].healing_die_remaining, 3);
+        // Both meters refill (ki is a "short or long rest" resource).
+        assert_eq!(sheet.meters.meters["ki"].spent, 0);
+        assert_eq!(sheet.meters.meters["slots"].spent, 0);
+    }
+
+    #[test]
+    fn test_short_rest_only_refills_short_meters() {
+        let mut sheet = Character::default();
+        sheet.meters.meters.insert(
+            "ki".to_string(),
+            Meter::new(
+                "ki".to_string(),
+                1,
+                RestoreTime {
+                    short_rest: true,
+                    long_rest: false,
+                },
+            ),
+        );
+        sheet.meters.meters.insert(
+            "slots".to_string(),
+            Meter::new(
+                "slots".to_string(),
+                1,
+                RestoreTime {
+                    short_rest: false,
+                    long_rest: true,
+                },
+            ),
+        );
+        sheet.meters.meters.get_mut("ki").unwrap().spend();
+        sheet.meters.meters.get_mut("slots").unwrap().spend();
+
+        sheet.short_rest();
+        assert_eq!(sheet.meters.meters["ki"].spent, 0);
+        assert_eq!(sheet.meters.meters["slots"].spent, 1);
     }
 }
