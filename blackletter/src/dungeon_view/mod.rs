@@ -175,9 +175,10 @@ pub fn keybindings() -> Vec<KeyBinding> {
         "e" => ToggleEnemies,
         "o" => ToggleLoot,
         "ctrl-l" => CycleLock,
-        "+" => ZoomIn,
+        "ctrl-=" => ZoomIn,
+        "ctrl-shift-=" => ZoomIn,
+        "ctrl--" => ZoomOut,
         "=" => ZoomReset,
-        "-" => ZoomOut,
         "0" => ZoomReset,
         "ctrl-z" => Undo,
         "ctrl-shift-z" => Redo,
@@ -240,6 +241,9 @@ pub struct DungeonView {
     path_overlay: Option<(Vec<RoomId>, bool)>,
     zoom: f32,
     pan: Vec2,
+    /// Bounds the view was fit to. Frozen so adding rooms does not re-zoom;
+    /// cleared when a re-fit is wanted (floor switch, reset).
+    fit_ref: Option<(glam::IVec2, glam::IVec2)>,
     geo: Option<Geometry>,
     show_help: bool,
     dragging: Option<Point<Pixels>>,
@@ -279,6 +283,7 @@ impl DungeonView {
             path_overlay: None,
             zoom: 1.0,
             pan: Vec2::ZERO,
+            fit_ref: None,
             geo: None,
             show_help: false,
             dragging: None,
@@ -490,7 +495,7 @@ impl DungeonView {
 
     fn move_cursor(&mut self, dir: Direction, window: &mut Window, cx: &mut Context<Self>) {
         if self.pending_door {
-            self.place_horizontal(dir, cx);
+            self.place_horizontal(dir, window, cx);
             return;
         }
         self.cursor += dir.offset();
@@ -500,18 +505,19 @@ impl DungeonView {
         cx.notify();
     }
 
-    fn place_horizontal(&mut self, dir: Direction, cx: &mut Context<Self>) {
+    fn place_horizontal(&mut self, dir: Direction, window: &mut Window, cx: &mut Context<Self>) {
         self.pending_door = false;
         let Some(from) = self.cursor_room() else {
             self.report("doors start from a room, not an empty cell", cx);
             return;
         };
         if let Some(target) = self.try_edit(cx, |d| d.add_horizontal_door(from, dir)) {
+            self.select_new_room(target, window, cx);
             self.report(format!("door {dir:?} placed → room {target}"), cx);
         }
     }
 
-    fn place_vertical(&mut self, up: bool, cx: &mut Context<Self>) {
+    fn place_vertical(&mut self, up: bool, window: &mut Window, cx: &mut Context<Self>) {
         self.pending_door = false;
         let Some(from) = self.cursor_room() else {
             self.report("stairs start from a room, not an empty cell", cx);
@@ -519,6 +525,7 @@ impl DungeonView {
         };
         let target = self.try_edit(cx, |d| d.add_vertical_door(from, up, VerticalKind::Stairs));
         if let Some(target) = target {
+            self.select_new_room(target, window, cx);
             self.report(
                 format!("stairs {} → room {target}", if up { "up" } else { "down" }),
                 cx,
@@ -607,6 +614,7 @@ impl DungeonView {
         };
         self.active_floor = self.doc.dungeon.floors[next as usize].id;
         self.selected_door = None;
+        self.fit_ref = None;
         cx.notify();
     }
 
@@ -649,10 +657,28 @@ impl DungeonView {
         }
     }
 
+    /// The cursor lands on the freshly created room. The view does **not**
+    /// re-fit (that used to change zoom on every add); it only pans when the
+    /// new room would otherwise sit off-screen.
+    fn select_new_room(&mut self, rid: RoomId, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(r) = self.doc.dungeon.room(rid) {
+            self.cursor = r.position;
+            self.active_floor = r.floor;
+            self.selected_door = None;
+            self.path_overlay = None;
+            self.keep_cell_visible(window, self.cursor);
+        }
+        cx.notify();
+    }
+
     fn keep_cursor_visible(&mut self, window: &mut Window) {
+        self.keep_cell_visible(window, self.cursor);
+    }
+
+    fn keep_cell_visible(&mut self, window: &mut Window, cell: glam::IVec2) {
         let Some(geo) = self.geo else { return };
         let bounds = window.bounds();
-        let rect = paint::cell_rect(geo, self.cursor);
+        let rect = paint::cell_rect(geo, cell);
         let mut pan = self.pan;
         if rect.origin.x < bounds.origin.x {
             pan.x += f32::from(bounds.origin.x - rect.origin.x) + 20.0;
@@ -727,17 +753,17 @@ impl DungeonView {
         }
     }
 
-    fn on_floor_up(&mut self, _: &FloorUp, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_floor_up(&mut self, _: &FloorUp, window: &mut Window, cx: &mut Context<Self>) {
         if self.pending_door {
-            self.place_vertical(true, cx);
+            self.place_vertical(true, window, cx);
         } else {
             self.step_floor(-1, false, cx);
         }
     }
 
-    fn on_floor_down(&mut self, _: &FloorDown, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_floor_down(&mut self, _: &FloorDown, window: &mut Window, cx: &mut Context<Self>) {
         if self.pending_door {
-            self.place_vertical(false, cx);
+            self.place_vertical(false, window, cx);
         } else {
             self.step_floor(1, false, cx);
         }
@@ -891,9 +917,26 @@ impl DungeonView {
         self.zoom_by(1.0 / 1.25, cx);
     }
 
-    fn on_zoom_reset(&mut self, _: &ZoomReset, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_zoom_reset(&mut self, _: &ZoomReset, window: &mut Window, cx: &mut Context<Self>) {
         self.zoom = 1.0;
         self.pan = Vec2::ZERO;
+        self.fit_ref = None;
+        // Recompute the fit now so the party centering uses the fresh
+        // geometry; the cursor (selection) does not move.
+        if let Some((min, max)) = paint::floor_bounds(&self.doc.dungeon, self.active_floor) {
+            let geo = paint::fit(window.bounds(), min, max, 1.0, Vec2::ZERO);
+            self.fit_ref = Some((min, max));
+            if let Some(rid) = self.doc.dungeon.party_position
+                && let Some(r) = self.doc.dungeon.room(rid)
+            {
+                let c = paint::cell_center(geo, r.position);
+                let b = window.bounds();
+                self.pan += glam::Vec2::new(
+                    f32::from(b.origin.x + b.size.width / 2.0 - c.x),
+                    f32::from(b.origin.y + b.size.height / 2.0 - c.y),
+                );
+            }
+        }
         cx.notify();
     }
 
@@ -1060,10 +1103,16 @@ impl Render for DungeonView {
         let win_bounds = window.bounds();
         // Geometry for hit-testing, from the window bounds (the canvas fills
         // the window, so the paint closure sees the same bounds).
-        let geo = match paint::floor_bounds(&self.doc.dungeon, self.active_floor) {
-            Some((min, max)) => paint::fit(win_bounds, min, max, self.zoom, self.pan),
-            None => paint::fit(win_bounds, self.cursor, self.cursor, self.zoom, self.pan),
+        let bounds = paint::floor_bounds(&self.doc.dungeon, self.active_floor)
+            .unwrap_or((self.cursor, self.cursor));
+        let fit_bounds = match self.fit_ref {
+            Some(r) => r,
+            None => {
+                self.fit_ref = Some(bounds);
+                bounds
+            }
         };
+        let geo = paint::fit(win_bounds, fit_bounds.0, fit_bounds.1, self.zoom, self.pan);
         self.geo = Some(geo);
 
         let frame = paint::Frame {
@@ -1077,7 +1126,6 @@ impl Render for DungeonView {
             path_safe: self.path_overlay.as_ref().is_some_and(|(_, s)| *s),
         };
         let (zoom, pan) = (self.zoom, self.pan);
-        let cursor = self.cursor;
 
         let click = cx.listener(
             |view: &mut DungeonView, ev: &gpui::ClickEvent, window, cx| {
@@ -1231,10 +1279,7 @@ impl Render for DungeonView {
                 gpui::canvas(
                     move |_, _, _| frame,
                     move |bounds, frame, window, cx| {
-                        let geo = match paint::floor_bounds(&frame.d, frame.floor) {
-                            Some((min, max)) => paint::fit(bounds, min, max, zoom, pan),
-                            None => paint::fit(bounds, cursor, cursor, zoom, pan),
-                        };
+                        let geo = paint::fit(bounds, fit_bounds.0, fit_bounds.1, zoom, pan);
                         paint::paint(&frame, geo, window, cx);
                     },
                 )
@@ -1337,7 +1382,7 @@ g             jump entrance     , . [ ] switch floors
 p             route party→cursor
 shift-P       route cursor→entrance
 t s c x e o   room: trap secret searched exit enemies loot
-+ - 0         zoom in / out / reset   drag mid/right: pan
+^= ^-         zoom in / out    = 0 reset + center on party
 enter         rename room       shift-O edit notes
 ctrl-z / ctrl-shift-z  undo / redo    ctrl-s save
 ?             this help               esc cancel/clear"#;
@@ -1400,8 +1445,16 @@ mod tests {
         assert_eq!(d.rooms.len(), 2);
         assert_eq!(d.doors.len(), 1);
 
-        // Move onto the new room, toggle enemies, then undo the toggle.
-        cx.simulate_keystrokes(window.into(), "l e");
+        // The new room is selected by the placement itself.
+        let cur = cx.read(|cx| root.read(cx).dungeon_view().unwrap().read(cx).cursor);
+        assert_eq!(
+            cur,
+            glam::IVec2::new(1, 0),
+            "placement selects the new room"
+        );
+
+        // Toggle enemies on it, then undo the toggle.
+        cx.simulate_keystrokes(window.into(), "e");
         cx.run_until_parked();
         let d = dungeon(cx, &root);
         assert_eq!(
