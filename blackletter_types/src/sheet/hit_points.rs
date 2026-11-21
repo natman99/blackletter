@@ -110,3 +110,84 @@ impl Display for HitPoints {
         write!(f, "{}", self.current)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        class::{Class, ClassType, Level},
+        roll::Die,
+    };
+
+    fn class(class: ClassType, level: i64, die: Die) -> Class {
+        Class {
+            class,
+            subclass: String::new(),
+            level: Level(level),
+            hit_dice: die,
+            health_bonus_per_level: 0,
+            healing_die_remaining: 0,
+            max_healing_die: 0,
+        }
+    }
+
+    #[test]
+    fn test_fixed_matches_srd_average_method() {
+        // PHB: level 1 = die max + CON, each later level = average (die/2+1) + CON.
+        // Level 5 fighter with CON 14: 10 + 2 + 4 * (6 + 2) = 44.
+        let mut scores = AbilityScores::default();
+        scores.con.base = 14;
+        let classes = Classes {
+            classes: vec![class(ClassType::Fighter, 5, Die::D10)],
+        };
+        let hp = HitPoints::new(1).fixed(&scores, &classes);
+        assert_eq!(hp.max, 44);
+
+        // Level 1 fighter, CON 14: 12.
+        let classes = Classes {
+            classes: vec![class(ClassType::Fighter, 1, Die::D10)],
+        };
+        let hp = HitPoints::new(1).fixed(&scores, &classes);
+        assert_eq!(hp.max, 12);
+    }
+
+    #[test]
+    fn test_fixed_multiclass() {
+        // Fighter 2 / wizard 1, CON 10: 10 + 6 + 4 = 20.
+        let scores = AbilityScores::default();
+        let classes = Classes {
+            classes: vec![
+                class(ClassType::Fighter, 2, Die::D10),
+                class(ClassType::Wizard, 1, Die::D6),
+            ],
+        };
+        let hp = HitPoints::new(1).fixed(&scores, &classes);
+        assert_eq!(hp.max, 20);
+    }
+
+    #[test]
+    fn test_temp_hp_absorbs_first() {
+        let mut hp = HitPoints::new(10);
+        hp.bonus = 3;
+        hp.hit(5);
+        assert_eq!(hp.bonus, 0);
+        assert_eq!(hp.current, 8);
+    }
+
+    #[test]
+    fn test_hit_clamps_at_zero() {
+        let mut hp = HitPoints::new(10);
+        hp.hit(15);
+        assert_eq!(hp.current, 0);
+    }
+
+    #[test]
+    fn test_heal_caps_at_max_and_ignores_temp() {
+        let mut hp = HitPoints::new(10);
+        hp.hit(4);
+        hp.heal(100);
+        assert_eq!(hp.current, 10);
+        // Healing never adds temporary hit points.
+        assert_eq!(hp.bonus, 0);
+    }
+}

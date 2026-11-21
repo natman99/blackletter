@@ -144,3 +144,52 @@ pub struct AbilityScoreBonus {
     /// The amount to increase by.
     pub bonus: i32,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        condition::Condition,
+        meter::{Meter, RestoreTime},
+        senses::Sense,
+    };
+
+    #[test]
+    fn test_apply_effects() {
+        let mut sheet = Character::default();
+        // All default scores are 10 (+0), default proficiency bonus +2.
+        assert_eq!(sheet.armor_class.get(), 10);
+
+        Effect::AcBonus(3).apply(&mut sheet);
+        assert_eq!(sheet.armor_class.get(), 13);
+
+        Effect::AbilityScoreBonus(AbilityScoreBonus {
+            score: Score::Int,
+            bonus: 2,
+        })
+        .apply(&mut sheet);
+        assert_eq!(sheet.ability_scores.int.get(), 12);
+
+        Effect::AddProficiency(Skill::Perception).apply(&mut sheet);
+        assert_eq!(sheet.skills.check(&Skill::Perception, &sheet.ability_scores), 2);
+        Effect::Expertise(Skill::Perception).apply(&mut sheet);
+        assert_eq!(sheet.skills.check(&Skill::Perception, &sheet.ability_scores), 4);
+
+        Effect::InitiativeBonus(2).apply(&mut sheet);
+        assert_eq!(sheet.initiative.get(&sheet.ability_scores), 2);
+
+        Effect::HealthBonusPerLevel(1).apply(&mut sheet);
+        assert_eq!(sheet.health.level_bonus, 1);
+
+        Effect::Sense(Sense::DarkVision).apply(&mut sheet);
+        assert!(sheet.senses.extra.dark_vision);
+
+        Effect::Condition(Condition::new("Stunned".to_string(), -1)).apply(&mut sheet);
+        assert_eq!(sheet.conditions.conditions.len(), 1);
+
+        Effect::Meter(Meter::new("Ki".to_string(), 4, RestoreTime::default())).apply(&mut sheet);
+        let ki = sheet.meters.meters.get("Ki").unwrap();
+        assert_eq!(ki.slot_number, 4);
+        assert_eq!(ki.spent, 0);
+    }
+}

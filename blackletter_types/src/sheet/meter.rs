@@ -101,3 +101,49 @@ impl Default for RestoreTime {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_spend_and_check() {
+        let mut m = Meter::new("Ki".to_string(), 2, RestoreTime::default());
+        assert!(m.check());
+        m.spend();
+        assert!(m.check());
+        m.spend();
+        assert!(!m.check());
+        // Spending beyond the cap is a no-op, not an overflow.
+        m.spend();
+        assert_eq!(m.spent, 2);
+    }
+
+    #[test]
+    fn test_restore_one_and_all() {
+        let mut m = Meter::new("Ki".to_string(), 3, RestoreTime::default());
+        for _ in 0..3 {
+            m.spend();
+        }
+        // restore() recovers exactly one slot per call.
+        m.restore();
+        assert_eq!(m.spent, 2);
+        m.restore_all();
+        assert_eq!(m.spent, 0);
+        // Restoring an unspent meter never underflows.
+        m.restore();
+        assert_eq!(m.spent, 0);
+    }
+
+    #[test]
+    fn test_add_and_remove_slots() {
+        let mut m = Meter::new("Rage".to_string(), 1, RestoreTime::default());
+        m.add();
+        assert_eq!(m.slot_number, 2);
+        m.remove();
+        m.remove();
+        // remove() saturates at zero.
+        assert_eq!(m.slot_number, 0);
+        assert!(!m.check());
+    }
+}

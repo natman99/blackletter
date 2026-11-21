@@ -118,14 +118,8 @@ pub fn filter<'a>(term: &str, data: &[&str], threshold: usize) -> Vec<usize> {
         .enumerate()
         .filter(|f| {
             let s = f.1;
-            for i in s.split(" ") {
-                if edit_distance(i, first) < threshold {
-                    return true;
-                } else {
-                    return false;
-                }
-            }
-            false
+            s.split(" ")
+                .any(|i| edit_distance(i, first) < threshold)
         })
         .map(|(i, f)| (i, *f))
         .collect::<Vec<(usize, &str)>>();

@@ -56,3 +56,23 @@ impl SavingThrows {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_check_proficient_and_not() {
+        let mut scores = AbilityScores::default();
+        scores.con.base = 14; // +2
+        let saves = SavingThrows {
+            con: true,
+            ..Default::default()
+        };
+        let skills = Skills::default(); // proficiency bonus +2
+        assert_eq!(saves.check(&Score::Con, &scores, &skills), 4);
+        assert_eq!(saves.check(&Score::Dex, &scores, &skills), 0);
+        assert!(saves.proficient(&Score::Con));
+        assert!(!saves.proficient(&Score::Dex));
+    }
+}
