@@ -1,6 +1,8 @@
 //! Blackletter: D&D 5e character sheets + dungeon tracking, one GPUI app.
 
 mod autosave;
+mod campaign;
+mod files;
 mod root;
 mod session;
 

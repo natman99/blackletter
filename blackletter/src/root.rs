@@ -10,14 +10,19 @@ use gpui::{
 use crate::session::Session;
 use std::path::PathBuf;
 
-actions!(blackletter, [ModeSheet, ModeDungeon]);
+actions!(
+    blackletter,
+    [ModeSheet, ModeDungeon, NewCampaign, OpenCampaign]
+);
 
 /// The app-wide keymap. Context-scoped contexts arrive with the modes; these
-/// two are global because switching modes must work from anywhere.
+/// are global because mode switching and campaign open work from anywhere.
 pub fn keybindings() -> Vec<KeyBinding> {
     vec![
         KeyBinding::new("ctrl-1", ModeSheet, None),
         KeyBinding::new("ctrl-2", ModeDungeon, None),
+        KeyBinding::new("ctrl-n", NewCampaign, None),
+        KeyBinding::new("ctrl-o", OpenCampaign, None),
     ]
 }
 
@@ -53,8 +58,6 @@ impl RootView {
     }
 
     /// Report a line in the status bar (chonk rule: success lines too).
-    // Consumed by the file plumbing (Task 1.3); quiet until then.
-    #[allow(dead_code)]
     pub fn set_status(&mut self, line: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.status = Some(line.into());
         cx.notify();
@@ -70,9 +73,7 @@ impl RootView {
         self.session.mode = mode.into();
         let b = window.bounds();
         self.session.window_size = Some((f32::from(b.size.width), f32::from(b.size.height)));
-        if let Some(path) = self.session_path.clone() {
-            let _ = crate::session::save(&path, &self.session);
-        }
+        self.save_session();
         cx.notify();
     }
 
@@ -82,6 +83,66 @@ impl RootView {
 
     fn on_mode_dungeon(&mut self, _: &ModeDungeon, window: &mut Window, cx: &mut Context<Self>) {
         self.set_mode(Mode::Dungeon, window, cx);
+    }
+
+    fn on_open_campaign(&mut self, _: &OpenCampaign, _: &mut Window, cx: &mut Context<Self>) {
+        let root = cx.entity().downgrade();
+        crate::files::pick_folder(
+            move |picked, cx| {
+                let Some(path) = picked else { return };
+                let _ = root.update(cx, |view, cx| view.open_campaign(path, cx));
+            },
+            cx,
+        );
+    }
+
+    fn on_new_campaign(&mut self, _: &NewCampaign, _: &mut Window, cx: &mut Context<Self>) {
+        let root = cx.entity().downgrade();
+        crate::files::pick_folder(
+            move |picked, cx| {
+                let Some(path) = picked else { return };
+                let _ = root.update(cx, |view, cx| view.new_campaign(path, cx));
+            },
+            cx,
+        );
+    }
+
+    /// Point the app at an existing campaign folder; reports to the status bar.
+    pub fn open_campaign(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        if !crate::campaign::Campaign::is_campaign(&path) {
+            self.set_status(format!("not a campaign folder: {}", path.display()), cx);
+            return;
+        }
+        let campaign = crate::campaign::Campaign { root: path.clone() };
+        self.session.campaign = Some(path);
+        self.save_session();
+        self.set_status(
+            format!(
+                "opened campaign {} — {} sheets, {} dungeons",
+                campaign.meta().name,
+                campaign.list_characters().len(),
+                campaign.list_dungeons().len()
+            ),
+            cx,
+        );
+    }
+
+    /// Create the campaign skeleton in `path` (a fresh or empty folder) and open it.
+    pub fn new_campaign(&mut self, path: std::path::PathBuf, cx: &mut Context<Self>) {
+        match crate::campaign::Campaign::create(path.clone()) {
+            Ok(campaign) => {
+                self.session.campaign = Some(path);
+                self.save_session();
+                self.set_status(format!("created campaign {}", campaign.meta().name), cx);
+            }
+            Err(e) => self.set_status(format!("could not create campaign: {e}"), cx),
+        }
+    }
+
+    fn save_session(&mut self) {
+        if let Some(path) = self.session_path.clone() {
+            let _ = crate::session::save(&path, &self.session);
+        }
     }
 
     // Read by the session restore path (Task 1.2).
@@ -120,6 +181,8 @@ impl Render for RootView {
             .text_color(gpui::rgb(0xcd_d6_f4))
             .on_action(cx.listener(Self::on_mode_sheet))
             .on_action(cx.listener(Self::on_mode_dungeon))
+            .on_action(cx.listener(Self::on_new_campaign))
+            .on_action(cx.listener(Self::on_open_campaign))
             // Top bar: mode tabs.
             .child(
                 div()
@@ -203,6 +266,27 @@ mod tests {
         let saved = crate::session::load(&path);
         assert_eq!(saved.mode, crate::session::StoredMode::Dungeon);
         assert!(saved.window_size.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[gpui::test]
+    fn open_campaign_reports_happy_and_error_paths(cx: &mut TestAppContext) {
+        let dir = std::env::temp_dir().join(format!("bl_open_campaign_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (_window, root) = open(cx);
+
+        // A plain folder is refused; the session keeps no campaign.
+        std::fs::create_dir_all(&dir).unwrap();
+        root.update(cx, |view, cx| view.open_campaign(dir.clone(), cx));
+        assert!(cx.read(|cx| root.read(cx).session.campaign.is_none()));
+
+        // A real campaign folder opens and is remembered in the session.
+        crate::campaign::Campaign::create(dir.clone()).unwrap();
+        root.update(cx, |view, cx| view.open_campaign(dir.clone(), cx));
+        assert_eq!(
+            cx.read(|cx| root.read(cx).session.campaign.clone()),
+            Some(dir.clone())
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
