@@ -16,6 +16,7 @@ use blackletter_types::{
     senses::Senses,
     skills::Skills,
     spells::{Spell, Spells},
+    traits::Trait,
 };
 use regex::Regex;
 use rhai::{Dynamic, Engine, Module, Scope, combine_with_exported_module};
@@ -112,6 +113,8 @@ impl Interface {
             spells,
             senses,
             features,
+            feats,
+            traits,
             ability_modifier,
             meters,
             lore,
@@ -135,6 +138,8 @@ impl Interface {
         scope.push("spells", spells);
         scope.push("senses", senses);
         scope.push("features", features);
+        scope.push("feats", feats);
+        scope.push("traits", traits);
         scope.push("ability_modifier", ability_modifier);
         scope.push("meters", meters);
         scope.push("lore", lore);
@@ -178,6 +183,8 @@ impl Interface {
             spells,
             senses,
             features,
+            feats,
+            traits,
             ability_modifier,
             meters,
             lore,
@@ -208,6 +215,8 @@ impl Interface {
         scope.push("spells", spells);
         scope.push("senses", senses);
         scope.push("features", features);
+        scope.push("feats", feats);
+        scope.push("traits", traits);
         scope.push("ability_modifier", ability_modifier);
         scope.push("meters", meters);
         scope.push("lore", lore);
@@ -244,6 +253,8 @@ impl Interface {
         let spells = extract!("spells", "spells")?;
         let senses = extract!("senses", "senses")?;
         let features = extract!("features", "features")?;
+        let feats = extract!("feats", "feats")?;
+        let traits = extract!("traits", "traits")?;
         let ability_modifier = extract!("ability_modifier", "ability_modifier")?;
         let meters = extract!("meters", "meters")?;
         let lore = extract!("lore", "lore")?;
@@ -266,6 +277,8 @@ impl Interface {
             spells,
             senses,
             features,
+            feats,
+            traits,
             ability_modifier,
             meters,
             lore,
@@ -298,6 +311,7 @@ fn register_engine_types(engine: &mut Engine) {
     engine.build_type::<Spells>();
     engine.build_type::<Spell>();
     engine.build_type::<Feat>();
+    engine.build_type::<Trait>();
 
     engine.register_indexer_get_set(Classes::get, Classes::set);
 }

@@ -5,10 +5,7 @@ use schemars::JsonSchema;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use std::{
-    collections::{BTreeMap, HashMap},
-    fmt::Display,
-};
+use std::{collections::BTreeMap, fmt::Display};
 use strum::EnumString;
 
 pub mod ability_score;
@@ -23,12 +20,14 @@ pub mod condition;
 pub mod damage;
 pub mod feat;
 pub mod feature;
+pub mod grant;
 pub mod language;
 pub mod lore;
 pub mod meter;
 pub mod saving_throws;
 pub mod senses;
 pub mod source;
+pub mod traits;
 
 pub use hit_points::HitPoints;
 pub use item::Item;
@@ -37,14 +36,21 @@ use ability_score::AbilityScore;
 
 use crate::{
     class::{Class, Classes, Level},
-    condition::Conditions,
+    condition::{Condition, Conditions},
+    feat::Feat,
     feature::Features,
+    grant::Modifiers,
     language::Languages,
     lore::Lore,
     meter::Meters,
     saving_throws::SavingThrows,
     senses::Senses,
-    sheet::{class::ClassType, skills::Skills, spells::Spells},
+    sheet::{
+        class::ClassType,
+        skills::{Skill, Skills},
+        spells::Spells,
+    },
+    traits::Trait,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -67,6 +73,8 @@ pub struct Character {
     pub spells: Spells,
     pub senses: Senses,
     pub features: Features,
+    pub feats: Vec<Feat>,
+    pub traits: Vec<Trait>,
     pub ability_modifier: Score,
     pub meters: Meters,
     pub lore: Lore,
@@ -111,6 +119,8 @@ impl Character {
             walking_speed: Default::default(),
             languages: Default::default(),
             conditions: Default::default(),
+            feats: Vec::new(),
+            traits: Vec::new(),
             ability_scores,
             saving_throws: Default::default(),
         };
@@ -119,12 +129,21 @@ impl Character {
     }
 
     pub fn ability_modifier(&self) -> i64 {
-        self.ability_scores.get(&self.ability_modifier).modifier()
+        self.ability_modifier_for(self.ability_modifier)
+    }
+    /// Ability modifier including any score bonuses granted by feats,
+    /// items, features, or traits.
+    pub fn ability_modifier_for(&self, score: Score) -> i64 {
+        self.effective_modifier(score, &self.modifiers())
+    }
+    fn effective_modifier(&self, score: Score, m: &Modifiers) -> i64 {
+        let total = self.ability_scores.get(&score).get() + m.score_bonus(score);
+        (total - 10).div_euclid(2)
     }
     /// Attack bonus.
     /// Ability modifier + proficiency bonus.
     pub fn attack_bonus(&self) -> i32 {
-        let f = self.ability_scores.get(&self.ability_modifier).modifier();
+        let f = self.ability_modifier_for(self.ability_modifier);
         self.skills.proficiency_bonus as i32 + f as i32
     }
     /// Spell attack bonus. Alias for `self.attack_bonus()`
@@ -132,12 +151,231 @@ impl Character {
         self.attack_bonus()
     }
     pub fn save_dc(&self) -> i64 {
-        let a = self.ability_scores.get(&self.ability_modifier);
-        8 + self.skills.proficiency_bonus + a.modifier()
+        8 + self.skills.proficiency_bonus + self.ability_modifier_for(self.ability_modifier)
     }
 
     pub fn initiative(&self) -> i64 {
-        self.initiative.get(&self.ability_scores)
+        let m = self.modifiers();
+        let dex_delta =
+            self.effective_modifier(Score::Dex, &m) - self.ability_scores.dex.modifier();
+        self.initiative.get(&self.ability_scores) + dex_delta + m.initiative
+    }
+
+    /// Aggregate every currently-granted effect (features, feats, equipped
+    /// items, traits, active conditions). Never stored, so removing a grant
+    /// can't leave residue behind.
+    #[must_use]
+    pub fn modifiers(&self) -> Modifiers {
+        let mut m = Modifiers::default();
+        for f in &self.features.inner {
+            m.absorb(f);
+        }
+        for f in &self.feats {
+            m.absorb(f);
+        }
+        for item in self.inventory.0.values() {
+            if item.equipped {
+                m.absorb(item);
+            }
+        }
+        for t in &self.traits {
+            m.absorb(t);
+        }
+        for c in &self.conditions.conditions {
+            m.absorb_condition(c);
+        }
+        m.finish();
+        m
+    }
+
+    /// Skill check including granted bonuses, proficiencies, and expertise.
+    #[must_use]
+    pub fn skill_check(&self, skill: &Skill) -> i64 {
+        let m = self.modifiers();
+        let score = self.skills.score_for(skill);
+        let score_delta =
+            self.effective_modifier(score, &m) - self.ability_scores.get(&score).modifier();
+        let mut total =
+            self.skills.check(skill, &self.ability_scores) + score_delta + m.skill_bonus(*skill);
+        // Granted proficiency/expertise only add what the base sheet lacks.
+        if m.has_proficiency(*skill) && !self.skills.proficiencies.contains(*skill) {
+            total += self.skills.proficiency_bonus;
+        }
+        if m.has_expertise(*skill) && !self.skills.expertise.contains(*skill) {
+            total += self.skills.proficiency_bonus;
+        }
+        total
+    }
+
+    /// Saving throw total including granted bonuses. Does not apply
+    /// condition auto-fails; check `auto_fails_save` at the roll site.
+    #[must_use]
+    pub fn save_total(&self, score: &Score) -> i64 {
+        let m = self.modifiers();
+        let score_delta =
+            self.effective_modifier(*score, &m) - self.ability_scores.get(score).modifier();
+        self.saving_throws
+            .check(score, &self.ability_scores, &self.skills)
+            + score_delta
+            + m.save_bonus(*score)
+    }
+
+    /// True if an active condition makes this save an automatic failure.
+    #[must_use]
+    pub fn auto_fails_save(&self, score: Score) -> bool {
+        self.modifiers().auto_fails_save(score)
+    }
+
+    /// True if the sheet can currently be subjected to this condition.
+    #[must_use]
+    pub fn can_be_conditioned(&self, kind: &crate::condition::ConditionKind) -> bool {
+        !self.modifiers().is_immune_to(kind)
+    }
+
+    #[must_use]
+    pub fn can_take_actions(&self) -> bool {
+        !self.modifiers().cant_take_actions
+    }
+
+    /// Armor class including granted AC bonuses.
+    #[must_use]
+    pub fn armor_class_total(&self) -> i64 {
+        self.armor_class.get() + self.modifiers().ac
+    }
+
+    /// Walking speed including granted speed bonuses.
+    #[must_use]
+    pub fn speed_total(&self) -> i64 {
+        let m = self.modifiers();
+        if m.speed_zero {
+            0
+        } else {
+            self.walking_speed.0 + m.speed
+        }
+    }
+
+    /// Add a feature grant.
+    pub fn add_feature(&mut self, feature: crate::feature::Feature) {
+        self.features.inner.push(feature);
+    }
+    /// Add a feat grant.
+    pub fn add_feat(&mut self, feat: Feat) {
+        self.feats.push(feat);
+    }
+    /// Add a trait grant.
+    pub fn add_trait(&mut self, trait_: Trait) {
+        self.traits.push(trait_);
+    }
+    /// Add a condition (respects condition immunities; returns whether it
+    /// was applied).
+    pub fn add_condition(&mut self, condition: Condition) -> bool {
+        if !self.can_be_conditioned(&condition.kind) {
+            return false;
+        }
+        self.conditions.conditions.push(condition);
+        true
+    }
+    /// Equip an inventory item by name so its effects count.
+    pub fn equip(&mut self, name: &str) -> bool {
+        match self.inventory.0.get_mut(name) {
+            Some(item) => {
+                item.equipped = true;
+                true
+            }
+            None => false,
+        }
+    }
+    /// Unequip an inventory item by name, revoking its effects.
+    pub fn unequip(&mut self, name: &str) -> bool {
+        match self.inventory.0.get_mut(name) {
+            Some(item) if item.equipped => {
+                item.equipped = false;
+                true
+            }
+            _ => false,
+        }
+    }
+    /// Remove the first grant matching `name` (case-insensitive): feature,
+    /// feat, trait, or condition. Equipped items are unequipped rather than
+    /// deleted. Returns whether anything was removed.
+    pub fn remove_grant(&mut self, name: &str) -> bool {
+        if let Some(i) = self
+            .features
+            .inner
+            .iter()
+            .position(|f| f.name.eq_ignore_ascii_case(name))
+        {
+            self.features.inner.remove(i);
+            return true;
+        }
+        if let Some(i) = self
+            .feats
+            .iter()
+            .position(|f| f.name.eq_ignore_ascii_case(name))
+        {
+            self.feats.remove(i);
+            return true;
+        }
+        if let Some(i) = self
+            .traits
+            .iter()
+            .position(|t| t.name.eq_ignore_ascii_case(name))
+        {
+            self.traits.remove(i);
+            return true;
+        }
+        if let Some(i) = self
+            .conditions
+            .conditions
+            .iter()
+            .position(|c| c.kind.to_string().eq_ignore_ascii_case(name))
+        {
+            self.conditions.conditions.remove(i);
+            return true;
+        }
+        // Items: match the inventory key case-insensitively, then unequip.
+        if let Some(key) = self
+            .inventory
+            .0
+            .keys()
+            .find(|k| k.eq_ignore_ascii_case(name))
+            .cloned()
+        {
+            return self.unequip(&key);
+        }
+        false
+    }
+    /// Whether any grant (feature, feat, trait, condition, equipped item)
+    /// matches `name` (case-insensitive).
+    #[must_use]
+    pub fn has_grant(&self, name: &str) -> bool {
+        self.features
+            .inner
+            .iter()
+            .any(|f| f.name.eq_ignore_ascii_case(name))
+            || self.feats.iter().any(|f| f.name.eq_ignore_ascii_case(name))
+            || self
+                .traits
+                .iter()
+                .any(|t| t.name.eq_ignore_ascii_case(name))
+            || self
+                .conditions
+                .conditions
+                .iter()
+                .any(|c| c.kind.to_string().eq_ignore_ascii_case(name))
+            || self
+                .inventory
+                .0
+                .values()
+                .any(|i| i.equipped && i.name.eq_ignore_ascii_case(name))
+    }
+
+    /// Advance condition durations by one turn, removing expired ones.
+    pub fn tick_conditions(&mut self) {
+        for c in &mut self.conditions.conditions {
+            c.tick();
+        }
+        self.conditions.conditions.retain(|c| c.duration != 0);
     }
 
     /// Refresh `skills.proficiency_bonus` from the SRD table for the
@@ -152,12 +390,8 @@ impl Character {
     /// otherwise take the average. Returns the amount healed.
     pub fn spend_hit_die(&mut self, class_index: usize, roll: bool) -> Option<i64> {
         let before = self.health.current;
-        self.classes.heal(
-            class_index,
-            roll,
-            &mut self.health,
-            &self.ability_scores,
-        );
+        self.classes
+            .heal(class_index, roll, &mut self.health, &self.ability_scores);
         let healed = self.health.current - before;
         (healed > 0).then_some(healed)
     }
@@ -192,9 +426,11 @@ impl Character {
 
     pub fn passive_senses(&self) -> PassiveSenses {
         PassiveSenses {
-            insight: self.senses.get_insight(&self.ability_scores, &self.skills),
-            perception: self.senses.get_perception(&self.ability_scores, &self.skills),
-            investigation: self.senses.get_investigation(&self.ability_scores, &self.skills),
+            insight: 10 + self.skill_check(&Skill::Insight) + self.senses.insight_bonus,
+            perception: 10 + self.skill_check(&Skill::Perception) + self.senses.perception_bonus,
+            investigation: 10
+                + self.skill_check(&Skill::Investigation)
+                + self.senses.investigation_bonus,
         }
     }
 }
@@ -221,6 +457,8 @@ impl Default for Character {
             walking_speed: Default::default(),
             languages: Default::default(),
             conditions: Default::default(),
+            feats: Vec::new(),
+            traits: Vec::new(),
         }
     }
 }
@@ -614,5 +852,197 @@ mod tests {
         sheet.short_rest();
         assert_eq!(sheet.meters.meters["ki"].spent, 0);
         assert_eq!(sheet.meters.meters["slots"].spent, 1);
+    }
+
+    // ---- grant system: lossless apply/remove ----
+
+    fn granted_feat(name: &str, effects: Vec<crate::feature::Effect>) -> Feat {
+        Feat {
+            name: name.to_string(),
+            desc: String::new(),
+            feature: Some(crate::feature::Feature {
+                name: name.to_string(),
+                source: None,
+                effects,
+            }),
+            source: None,
+        }
+    }
+
+    #[test]
+    fn test_grant_apply_remove_is_lossless() {
+        use crate::feature::Effect;
+        let mut sheet = Character::default();
+        let snapshot = sheet.clone();
+
+        sheet.add_feat(granted_feat(
+            "Alertness",
+            vec![
+                Effect::InitiativeBonus(2),
+                Effect::AcBonus(1),
+                Effect::AddProficiency(skills::Skill::Perception),
+                Effect::SkillBonus {
+                    skill: skills::Skill::Athletics,
+                    bonus: 1,
+                },
+                Effect::AbilityScoreBonus(crate::feature::AbilityScoreBonus {
+                    score: Score::Wis,
+                    bonus: 2,
+                }),
+            ],
+        ));
+
+        // All default scores 10 (+0), PB +2.
+        assert_eq!(sheet.initiative(), 2);
+        // PB +2 from granted proficiency, +1 from the granted Wis bonus.
+        assert_eq!(sheet.skill_check(&skills::Skill::Perception), 3);
+        assert_eq!(sheet.skill_check(&skills::Skill::Athletics), 1);
+        assert_eq!(sheet.passive_senses().perception, 13); // 10 + 3
+        assert_eq!(sheet.ability_modifier_for(Score::Wis), 1); // Wis 12
+        assert_eq!(sheet.modifiers().meters.len(), 0);
+
+        assert!(sheet.has_grant("alertness")); // case-insensitive
+        assert!(sheet.remove_grant("alertness"));
+
+        // The sheet is byte-identical to before: no residue, no side effects.
+        assert_eq!(sheet, snapshot);
+        assert_eq!(sheet.initiative(), 0);
+        assert_eq!(sheet.skill_check(&skills::Skill::Perception), 0);
+        assert_eq!(sheet.passive_senses().perception, 10);
+    }
+
+    #[test]
+    fn test_granted_proficiency_is_a_union() {
+        use crate::feature::{Effect, Feature};
+        let mut sheet = Character::default();
+        sheet.add_feature(Feature {
+            name: "Feature A".to_string(),
+            source: None,
+            effects: vec![Effect::AddProficiency(skills::Skill::Perception)],
+        });
+        sheet.add_feature(Feature {
+            name: "Feature B".to_string(),
+            source: None,
+            effects: vec![Effect::AddProficiency(skills::Skill::Perception)],
+        });
+        // Two sources, one proficiency: counted once (PB +2, not +4).
+        assert_eq!(sheet.skill_check(&skills::Skill::Perception), 2);
+        // Removing one still leaves the other.
+        assert!(sheet.remove_grant("Feature A"));
+        assert_eq!(sheet.skill_check(&skills::Skill::Perception), 2);
+        assert!(sheet.remove_grant("Feature B"));
+        assert_eq!(sheet.skill_check(&skills::Skill::Perception), 0);
+    }
+
+    #[test]
+    fn test_granted_expertise_doubles() {
+        use crate::feature::{Effect, Feature};
+        let mut sheet = Character::default();
+        sheet.add_feature(Feature {
+            name: "Expert".to_string(),
+            source: None,
+            effects: vec![
+                Effect::AddProficiency(skills::Skill::Perception),
+                Effect::Expertise(skills::Skill::Perception),
+            ],
+        });
+        assert_eq!(sheet.skill_check(&skills::Skill::Perception), 4);
+        assert!(sheet.remove_grant("Expert"));
+        assert_eq!(sheet.skill_check(&skills::Skill::Perception), 0);
+    }
+
+    #[test]
+    fn test_condition_effects_and_removal() {
+        let mut sheet = Character::default();
+        let snapshot = sheet.clone();
+
+        assert!(sheet.add_condition(Condition::new("Stunned", 2)));
+        assert!(sheet.auto_fails_save(Score::Dex));
+        assert!(sheet.auto_fails_save(Score::Str));
+        assert!(!sheet.auto_fails_save(Score::Con));
+        assert!(!sheet.can_take_actions());
+        // SRD: Stunned gives advantage vs attacks, but melee auto-crits
+        // apply only to Paralyzed/Unconscious.
+        assert!(!sheet.modifiers().melee_auto_critical);
+        assert!(sheet.modifiers().attacks_against_advantage);
+
+        assert!(sheet.remove_grant("stunned")); // case-insensitive
+        assert!(!sheet.auto_fails_save(Score::Dex));
+        assert!(sheet.can_take_actions());
+        assert_eq!(sheet, snapshot);
+    }
+
+    #[test]
+    fn test_condition_immunity_blocks_condition() {
+        use crate::feature::Effect;
+        let mut sheet = Character::default();
+        sheet.add_feat(granted_feat(
+            "Brave Heart",
+            vec![Effect::ConditionImmunity(
+                crate::condition::ConditionKind::Frightened,
+            )],
+        ));
+        assert!(!sheet.add_condition(Condition::new("Frightened", 3)));
+        assert!(sheet.add_condition(Condition::new("Poisoned", 3)));
+        assert_eq!(sheet.conditions.conditions.len(), 1);
+    }
+
+    #[test]
+    fn test_item_equip_unequip_is_lossless() {
+        use crate::feature::Effect;
+        let mut sheet = Character::default();
+        let base_ac = sheet.armor_class_total();
+
+        let mut cloak = Item::new("Cloak of Protection".to_string());
+        cloak.add(Effect::AcBonus(1));
+        sheet
+            .inventory
+            .0
+            .insert("Cloak of Protection".to_string(), cloak);
+
+        // In the backpack: no effect.
+        assert_eq!(sheet.armor_class_total(), base_ac);
+        assert!(sheet.equip("Cloak of Protection"));
+        assert_eq!(sheet.armor_class_total(), base_ac + 1);
+        // "Removing" the grant unequips rather than deleting.
+        assert!(sheet.remove_grant("cloak of protection"));
+        assert_eq!(sheet.armor_class_total(), base_ac);
+        assert!(sheet.inventory.0.contains_key("Cloak of Protection"));
+    }
+
+    #[test]
+    fn test_tick_conditions_removes_expired() {
+        let mut sheet = Character::default();
+        sheet.add_condition(Condition::new("Stunned", 1));
+        sheet.add_condition(Condition::new("Poisoned", -1)); // permanent
+        sheet.tick_conditions();
+        assert_eq!(sheet.conditions.conditions.len(), 1);
+        assert_eq!(sheet.conditions.conditions[0].kind.to_string(), "Poisoned");
+        sheet.tick_conditions();
+        assert_eq!(sheet.conditions.conditions.len(), 1);
+    }
+
+    #[test]
+    fn test_speed_and_save_bonuses() {
+        use crate::feature::Effect;
+        let mut sheet = Character::default();
+        let base_speed = sheet.speed_total();
+        let base_save = sheet.save_total(&Score::Str);
+
+        sheet.add_feat(granted_feat(
+            "Swift",
+            vec![
+                Effect::SpeedBonus(10),
+                Effect::SaveBonus {
+                    score: Score::Str,
+                    bonus: 2,
+                },
+            ],
+        ));
+        assert_eq!(sheet.speed_total(), base_speed + 10);
+        assert_eq!(sheet.save_total(&Score::Str), base_save + 2);
+        assert!(sheet.remove_grant("Swift"));
+        assert_eq!(sheet.speed_total(), base_speed);
+        assert_eq!(sheet.save_total(&Score::Str), base_save);
     }
 }

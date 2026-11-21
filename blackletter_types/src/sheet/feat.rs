@@ -1,18 +1,37 @@
 use crate::{
-    feature::{Feature, HasFeature},
+    feature::{Effect, Feature},
     sheet::source::{HasSource, Source},
 };
+
+#[cfg(feature = "schema")]
+use schemars::JsonSchema;
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "rhai")]
 use rhai::CustomType;
 
 #[cfg_attr(feature = "rhai", derive(CustomType))]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[cfg_attr(feature = "serde", serde(default))]
 pub struct Feat {
     pub name: String,
     pub desc: String,
-    feature: Option<Feature>,
-    source: Option<Source>,
+    pub feature: Option<Feature>,
+    pub source: Option<Source>,
+}
+
+impl Default for Feat {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            desc: String::new(),
+            feature: None,
+            source: None,
+        }
+    }
 }
 
 impl HasSource for Feat {
@@ -21,29 +40,29 @@ impl HasSource for Feat {
     }
 
     fn add_source(&mut self, source: Source) {
-        self.source = Some(source);
+        self.source = Some(source)
     }
 }
 
-impl HasFeature for Feat {
-    fn apply(&self, sheet: &mut super::Character) {
-        if let Some(s) = &self.feature {
-            for i in &s.effects {
-                i.apply(sheet);
-            }
-        }
+impl Feat {
+    /// The effects this feat grants (its wrapped feature, if any).
+    #[must_use]
+    pub fn effects(&self) -> &[Effect] {
+        self.feature
+            .as_ref()
+            .map(|f| f.effects.as_slice())
+            .unwrap_or(&[])
     }
 
-    fn add(&mut self, feature: super::feature::Effect) {
-        if self.feature.is_none() {
-            self.feature = Some(Feature {
-                source: Some(self.source.clone().unwrap_or_else(|| {
-                    Source::Single("Please add source before features".to_string())
-                })),
-                effects: vec![],
-            })
+    /// Add an effect to this feat, creating the wrapped feature if needed.
+    pub fn add(&mut self, effect: Effect) {
+        self.feature.get_or_insert_with(|| Feature {
+            name: self.name.clone(),
+            source: self.source.clone(),
+            effects: vec![],
+        });
+        if let Some(feature) = &mut self.feature {
+            feature.effects.push(effect);
         }
-
-        self.feature.as_mut().unwrap().effects.push(feature);
     }
 }

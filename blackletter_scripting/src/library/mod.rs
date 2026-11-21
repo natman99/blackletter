@@ -1,12 +1,7 @@
 use std::{any::TypeId, str::FromStr};
 
 use blackletter_types::{
-    Item,
-    feat::Feat,
-    feature::{Effect, HasFeature},
-    senses::Sense,
-    skills::Skill,
-    source::HasSource,
+    Item, feat::Feat, feature::Effect, senses::Sense, skills::Skill, source::HasSource,
 };
 use rhai::{Dynamic, ImmutableString};
 
@@ -18,7 +13,7 @@ pub mod library {
         Initiative, Item, Score,
         class::Class,
         feat::Feat,
-        feature::{Effect, Feature, HasFeature},
+        feature::{Effect, Feature},
         meter::{Meter, Meters, RestoreTime},
         roll::{Die, Roll},
         saving_throws::SavingThrows,
@@ -81,7 +76,7 @@ pub mod library {
     // -- meter submodule --
 
     pub mod meter {
-        use super::{ImmutableString, Meter, RestoreTime, Meters, HasSource, Source};
+        use super::{HasSource, ImmutableString, Meter, Meters, RestoreTime, Source};
 
         pub fn meter(name: ImmutableString, slots: i64) -> Meter {
             Meter::new(name.to_string(), slots as u32, RestoreTime::default())
@@ -109,7 +104,7 @@ pub mod library {
     pub mod class {
         use std::str::FromStr;
 
-        use super::{Class, ImmutableString, Die};
+        use super::{Class, Die, ImmutableString};
 
         pub fn set_class(class: &mut Class, s: ImmutableString) {
             class.set_class(s.as_str());
@@ -136,7 +131,7 @@ pub mod library {
     pub mod spell {
         use std::str::FromStr;
 
-        use super::{ImmutableString, HasSource, Source, Roll};
+        use super::{HasSource, ImmutableString, Roll, Source};
         use blackletter_types::{
             Score,
             damage::DamageType,
@@ -278,7 +273,7 @@ pub mod library {
     pub mod item {
         use blackletter_types::Score;
 
-        use super::{ImmutableString, Item, Roll, Effect, HasFeature, HasSource, Source, FromStr};
+        use super::{Effect, FromStr, HasSource, ImmutableString, Item, Roll, Source};
 
         #[rhai_fn(name = "item")]
         pub fn item_name_desc(name: ImmutableString, description: ImmutableString) -> Item {
@@ -362,7 +357,7 @@ pub mod library {
     // -- feat submodule --
 
     pub mod feat {
-        use super::{Feat, ImmutableString, HasSource, Source, Effect, HasFeature, Feature};
+        use super::{Effect, Feat, Feature, HasSource, ImmutableString, Source};
 
         pub fn source(f: &mut Feat, source: ImmutableString) {
             f.add_source(Source::Single(source.to_string()));
@@ -384,7 +379,7 @@ pub mod library {
 
         use blackletter_types::roll::Roll;
 
-        use super::{ImmutableString, Dynamic};
+        use super::{Dynamic, ImmutableString};
 
         pub fn roll(s: ImmutableString) -> Dynamic {
             if let Ok(r) = Roll::from_str(s.as_str()) {
@@ -516,7 +511,6 @@ pub mod library {
     // -- skills submodule --
 
     pub mod skills {
-        
 
         use blackletter_types::{Score, skills::Skill};
         use rhai::ImmutableString;
@@ -593,8 +587,6 @@ pub mod library {
 
         use blackletter_types::lore::{Alignment, Morality, Order};
         use rhai::ImmutableString;
-
-        
 
         #[rhai_fn(set = "morality")]
         pub fn set_morality(a: &mut Alignment, v: ImmutableString) {
@@ -757,14 +749,7 @@ enum FeatureEnum {
     Feat(Feat),
 }
 
-impl HasFeature for FeatureEnum {
-    fn apply(&self, sheet: &mut blackletter_types::Character) {
-        match self {
-            Self::Item(item) => item.apply(sheet),
-            Self::Feat(feat) => feat.apply(sheet),
-        }
-    }
-
+impl FeatureEnum {
     fn add(&mut self, feature: blackletter_types::feature::Effect) {
         match self {
             Self::Item(item) => item.add(feature),
@@ -790,8 +775,6 @@ impl HasSource for FeatureEnum {
 }
 
 fn parse_double_effect(f: ImmutableString, val: Dynamic) -> Option<Effect> {
-    
-
     match f.as_str() {
         "armor" | "armor_class" | "ac" => Some(Effect::AcBonus(val.as_int().ok()?)),
         "health_bonus" => Some(Effect::HealthBonusPerLevel(val.as_int().ok()?)),

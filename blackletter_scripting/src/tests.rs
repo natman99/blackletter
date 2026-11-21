@@ -195,6 +195,7 @@ fn inventory() {
             roll: Some(Roll::from_str("2d4").unwrap()),
             source: Some(Source::Single("book of cool items".to_string())),
             feature: None,
+            equipped: false,
             to_hit: Some(Score::Cha)
         }
     );

@@ -1,6 +1,6 @@
 use std::{fmt::Display, str::FromStr};
 
-use enumflags2::{BitFlag, BitFlags, bitflags};
+use enumflags2::{BitFlags, bitflags};
 #[cfg(feature = "schema")]
 use schemars::JsonSchema;
 #[cfg(feature = "serde")]
@@ -352,36 +352,35 @@ impl From<Skills> for SkillsJson {
     }
 }
 impl Skills {
-    /// Get the skill bonus.
-    pub fn check(&self, skill: &Skill, ability_scores: &AbilityScores) -> i64 {
-        let base_modifier = if let Some(o) = self.overrides.get(skill) {
-            ability_scores.get(&o).modifier()
+    /// The ability score that governs this skill (honoring overrides).
+    #[must_use]
+    pub fn score_for(&self, skill: &Skill) -> Score {
+        if let Some(o) = self.overrides.get(skill) {
+            o
         } else {
             match skill {
-                //str scaling
-                Skill::Athletics => ability_scores.str.modifier(),
-                // dex scaling
-                Skill::Acrobatics | Skill::SleightOfHand | Skill::Stealth => {
-                    ability_scores.dex.modifier()
-                }
-                // int scaling
+                Skill::Athletics => Score::Str,
+                Skill::Acrobatics | Skill::SleightOfHand | Skill::Stealth => Score::Dex,
                 Skill::Arcana
                 | Skill::History
                 | Skill::Investigation
                 | Skill::Nature
-                | Skill::Religion => ability_scores.int.modifier(),
-                // wis scaling
+                | Skill::Religion => Score::Int,
                 Skill::AnimalHandling
                 | Skill::Insight
                 | Skill::Medicine
                 | Skill::Perception
-                | Skill::Survival => ability_scores.wis.modifier(),
-                // cha scaling
+                | Skill::Survival => Score::Wis,
                 Skill::Deception | Skill::Intimidation | Skill::Performance | Skill::Persuasion => {
-                    ability_scores.cha.modifier()
+                    Score::Cha
                 }
             }
-        };
+        }
+    }
+
+    /// Get the skill bonus.
+    pub fn check(&self, skill: &Skill, ability_scores: &AbilityScores) -> i64 {
+        let base_modifier = ability_scores.get(&self.score_for(skill)).modifier();
 
         let bonus = if self.proficiencies.contains(*skill) {
             self.proficiency_bonus
@@ -395,7 +394,6 @@ impl Skills {
             bonus
         };
 
-        
         base_modifier + bonus
     }
 }
