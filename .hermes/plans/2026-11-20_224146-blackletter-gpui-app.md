@@ -167,7 +167,9 @@ Three features the rulings need that the engine doesn't have yet. Each = its own
 - Features/feats/traits: list + add/remove (`add_feat`, `add_trait`; `Custom(String)` homebrew escape hatch gets a plain editor).
 - Every mutation: snapshot → mutate → `cx.notify()` → mark dirty. Tests per section: mutate via view, assert derived getter changed (e.g. toggle proficiency → `skill_check` +2).
 
-### Task 3.3 — Dice tray (engine showcase)
+### Task 3.3 — Dice tray (engine showcase) — DONE
+- Keys a/v/c/x open roll prompts (attack/save/check/damage expression); trailing a/d = advantage/disadvantage; skill by prefix, save by 2-letter score; damage expr + type shows 'raw -> after (resisted/vulnerable/no effect)' via apply_resistance without touching HP. Results log (last 5) in a bottom tray strip + status bar. Live-verified: 'attack +8: 26 d20 18', 'Dex save +3: 11 d20 8'.
+- Original spec:
 - Bottom-right tray: quick roll buttons — attack (advantage picker, uses `roll_attack`), save (`roll_save`), check (`roll_check`), damage expression input + `apply_resistance` result line ("14 → 7 vs resistance"). Results land in a small log + status bar. This is the daily-use surface; keep it visible in sheet mode.
 
 Phase gate: a real Level-1 sheet can be edited end-to-end; SRD spot-checks against the vault Wiki + vendored JSON per the blackletter skill's audit rules.

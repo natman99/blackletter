@@ -14,6 +14,7 @@ use blackletter_types::{
     class::CastingMechanic,
     condition::{Condition, ConditionKind},
     damage::DamageType,
+    roll::Advantage,
     skills::Skill,
 };
 use gpui::{
@@ -47,6 +48,10 @@ actions!(
         RollDeathSave,
         ShortRest,
         LongRest,
+        TrayAttack,
+        TraySave,
+        TrayCheck,
+        TrayDamage,
     ]
 );
 
@@ -76,6 +81,10 @@ pub fn keybindings() -> Vec<KeyBinding> {
         "r" => RollDeathSave,
         "s" => ShortRest,
         "shift-s" => LongRest,
+        "a" => TrayAttack,
+        "v" => TraySave,
+        "c" => TrayCheck,
+        "x" => TrayDamage,
         "ctrl-z" => Undo,
         "ctrl-shift-z" => Redo,
         "ctrl-s" => Save,
@@ -144,6 +153,17 @@ enum FieldTarget {
     Amount(bool),
     /// New inventory item name prompt.
     NewItem,
+    /// Dice-tray roll prompt.
+    Roll(RollKind),
+}
+
+/// What the dice tray is prompting for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RollKind {
+    Attack,
+    Save,
+    Check,
+    Damage,
 }
 
 /// The six ability rows in the Abilities section.
@@ -185,6 +205,8 @@ pub struct SheetView {
     /// Damage type the quick-damage keys cycle through (for resistances).
     damage_type: DamageType,
     field: Option<(FieldTarget, Field)>,
+    /// Dice-tray result log, newest first (max 5).
+    roll_log: Vec<String>,
     blank: Field,
 }
 
@@ -205,6 +227,7 @@ impl SheetView {
             sel: 0,
             damage_type: DamageType::Bludgeoning,
             field: None,
+            roll_log: Vec::new(),
             blank: Field::new(""),
         }
     }
@@ -284,6 +307,174 @@ impl SheetView {
             }
         }
         cx.notify();
+    }
+
+    // ---- dice tray (Task 3.3) ----
+
+    fn open_roll_field(&mut self, kind: RollKind, cx: &mut Context<Self>) {
+        let prompt = match kind {
+            RollKind::Attack => "attack — [a]dv [d]is enter to roll",
+            RollKind::Save => "save: str dex con int wis cha [a/d]",
+            RollKind::Check => "check: skill name [a/d]",
+            RollKind::Damage => "damage: e.g. 2d6+3 fire",
+        };
+        self.field = Some((FieldTarget::Roll(kind), Field::new("")));
+        self.report(prompt, cx);
+    }
+
+    fn on_tray_attack(&mut self, _: &TrayAttack, _: &mut Window, cx: &mut Context<Self>) {
+        self.open_roll_field(RollKind::Attack, cx);
+    }
+
+    fn on_tray_save(&mut self, _: &TraySave, _: &mut Window, cx: &mut Context<Self>) {
+        self.open_roll_field(RollKind::Save, cx);
+    }
+
+    fn on_tray_check(&mut self, _: &TrayCheck, _: &mut Window, cx: &mut Context<Self>) {
+        self.open_roll_field(RollKind::Check, cx);
+    }
+
+    fn on_tray_damage(&mut self, _: &TrayDamage, _: &mut Window, cx: &mut Context<Self>) {
+        self.open_roll_field(RollKind::Damage, cx);
+    }
+
+    /// Pull a trailing advantage token ("a"/"adv"/"d"/"dis") out of the
+    /// prompt text.
+    fn take_advantage(tokens: &mut Vec<String>) -> Advantage {
+        if let Some(last) = tokens.last() {
+            match last.as_str() {
+                "a" | "adv" | "advantage" => {
+                    tokens.pop();
+                    return Advantage::Advantage;
+                }
+                "d" | "dis" | "disadv" | "disadvantage" => {
+                    tokens.pop();
+                    return Advantage::Disadvantage;
+                }
+                _ => {}
+            }
+        }
+        Advantage::Normal
+    }
+
+    fn log_roll(&mut self, line: String, cx: &mut Context<Self>) {
+        self.roll_log.insert(0, line.clone());
+        self.roll_log.truncate(5);
+        self.report(line, cx);
+    }
+
+    fn outcome_line(kind: &str, bonus: i64, out: &blackletter_types::RollOutcome) -> String {
+        let adv = match out.advantage {
+            Advantage::Normal => String::new(),
+            Advantage::Advantage => " (adv)".to_string(),
+            Advantage::Disadvantage => " (dis)".to_string(),
+        };
+        let nat = out
+            .result
+            .natural
+            .map(|n| format!(" d20 {n}"))
+            .unwrap_or_default();
+        let crit = if out.result.is_critical_hit() {
+            " CRIT!"
+        } else {
+            ""
+        };
+        let auto = if out.auto_failed { " AUTO-FAIL" } else { "" };
+        format!(
+            "{kind} {bonus:+}: {}{nat}{adv}{auto}{crit}",
+            out.result.total
+        )
+    }
+
+    fn commit_roll(&mut self, kind: RollKind, text: &str, cx: &mut Context<Self>) {
+        let mut tokens: Vec<String> = text.split_whitespace().map(|t| t.to_lowercase()).collect();
+        let adv = Self::take_advantage(&mut tokens);
+        let rng = &mut rand::rng();
+        let line = match kind {
+            RollKind::Attack => {
+                let out = self.doc.character.roll_attack(rng, adv);
+                Self::outcome_line("attack", out.bonus, &out)
+            }
+            RollKind::Save => {
+                let Some(tok) = tokens.first() else {
+                    self.report("save needs str dex con int wis cha", cx);
+                    return;
+                };
+                let score = match tok.as_str() {
+                    t if t.starts_with("st") => Score::Str,
+                    t if t.starts_with("de") => Score::Dex,
+                    t if t.starts_with("co") => Score::Con,
+                    t if t.starts_with("in") => Score::Int,
+                    t if t.starts_with("wi") => Score::Wis,
+                    t if t.starts_with("ch") => Score::Cha,
+                    _ => {
+                        self.report("unknown save — str dex con int wis cha", cx);
+                        return;
+                    }
+                };
+                let out = self.doc.character.roll_save(rng, score, adv);
+                Self::outcome_line(&format!("{score} save"), out.bonus, &out)
+            }
+            RollKind::Check => {
+                let Some(tok) = tokens.first() else {
+                    self.report("check needs a skill name", cx);
+                    return;
+                };
+                let Some((i, _)) = Skill::ALL_STR
+                    .iter()
+                    .enumerate()
+                    .find(|&(_, s)| s.starts_with(tok.as_str()))
+                else {
+                    self.report("unknown skill", cx);
+                    return;
+                };
+                let skill = Skill::ALL[i];
+                let out = self.doc.character.roll_check(rng, &skill, adv);
+                Self::outcome_line(&format!("{skill} check"), out.bonus, &out)
+            }
+            RollKind::Damage => {
+                let Some(expr) = tokens.first() else {
+                    self.report("damage needs an expression, e.g. 2d6+3", cx);
+                    return;
+                };
+                let Ok(roll) = expr.parse::<blackletter_types::roll::Roll>() else {
+                    self.report("could not parse dice expression", cx);
+                    return;
+                };
+                let kind_tok = tokens.get(1).map(String::as_str);
+                let dtype = match kind_tok.unwrap_or("") {
+                    t if t.starts_with("ac") => Some(DamageType::Acid),
+                    t if t.starts_with("bl") => Some(DamageType::Bludgeoning),
+                    t if t.starts_with("co") => Some(DamageType::Cold),
+                    t if t.starts_with("fi") => Some(DamageType::Fire),
+                    t if t.starts_with("fo") => Some(DamageType::Force),
+                    t if t.starts_with("li") => Some(DamageType::Lightning),
+                    t if t.starts_with("ne") => Some(DamageType::Necrotic),
+                    t if t.starts_with("pi") => Some(DamageType::Piercing),
+                    t if t.starts_with("po") => Some(DamageType::Poison),
+                    t if t.starts_with("ps") => Some(DamageType::Psychic),
+                    t if t.starts_with("ra") => Some(DamageType::Radiant),
+                    t if t.starts_with("sl") => Some(DamageType::Slashing),
+                    t if t.starts_with("th") => Some(DamageType::Thunder),
+                    _ => None,
+                };
+                let result = roll.roll(rng, None);
+                let raw = result.total;
+                match dtype {
+                    Some(dt) => {
+                        let after = self.doc.character.apply_resistance(dt, false, raw);
+                        let verb = match after.cmp(&raw) {
+                            std::cmp::Ordering::Less => "resisted",
+                            std::cmp::Ordering::Greater => "vulnerable",
+                            std::cmp::Ordering::Equal => "no effect",
+                        };
+                        format!("{expr} {dt:?}: {raw} -> {after} ({verb})")
+                    }
+                    None => format!("{expr}: {raw}"),
+                }
+            }
+        };
+        self.log_roll(line, cx);
     }
 
     fn on_level_up(&mut self, _: &LevelUp, _: &mut Window, cx: &mut Context<Self>) {
@@ -682,6 +873,7 @@ impl SheetView {
                     self.report(format!("renamed to {text}"), cx);
                 }
             }
+            FieldTarget::Roll(kind) => self.commit_roll(kind, field.text().trim(), cx),
             FieldTarget::NewItem => {
                 let text = field.text().trim().to_string();
                 if text.is_empty() {
@@ -1713,6 +1905,36 @@ impl SheetView {
             .into_any_element()
     }
 
+    /// Bottom dice-tray strip: recent roll results + key hints.
+    fn tray(&self, cx: &mut Context<Self>) -> AnyElement {
+        let _ = cx;
+        let lines: Vec<_> = self
+            .roll_log
+            .iter()
+            .map(|l| {
+                div()
+                    .text_xs()
+                    .text_color(gpui::rgb(0xba_b2_c8))
+                    .child(l.clone())
+            })
+            .collect();
+        div()
+            .border_t_1()
+            .border_color(gpui::rgb(0x31_32_44))
+            .px_2()
+            .py_1()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(gpui::rgb(0x6c_70_86))
+                    .child("a attack   v save   c check   x damage   (d = apply damage to HP)"),
+            )
+            .children(lines)
+            .into_any_element()
+    }
+
     fn combat_section(&self, cx: &mut Context<Self>) -> AnyElement {
         let c = &self.doc.character;
         let rows: Vec<_> = COMBAT_LABELS
@@ -1924,6 +2146,10 @@ impl Render for SheetView {
             .on_action(cx.listener(Self::on_roll_death_save))
             .on_action(cx.listener(Self::on_short_rest))
             .on_action(cx.listener(Self::on_long_rest))
+            .on_action(cx.listener(Self::on_tray_attack))
+            .on_action(cx.listener(Self::on_tray_save))
+            .on_action(cx.listener(Self::on_tray_check))
+            .on_action(cx.listener(Self::on_tray_damage))
             .child(self.nav(cx))
             .child(
                 div()
@@ -1940,7 +2166,8 @@ impl Render for SheetView {
                                 .child(FieldElement::new(cx.entity())),
                         )
                     })
-                    .child(self.center(cx)),
+                    .child(self.center(cx))
+                    .child(self.tray(cx)),
             )
             .child(self.summary())
     }
@@ -2195,6 +2422,37 @@ mod tests {
             cx.read(|cx| view.read(cx).doc().character.spells.spells["shield"].prepared),
             "space toggles prepared for prepared casters"
         );
+    }
+
+    #[gpui::test]
+    fn dice_tray_rolls_all_kinds(cx: &mut TestAppContext) {
+        let (window, root) = open_sheet(cx);
+        let view = sheet(cx, &root);
+        // Attack with advantage: "a" opens the prompt, "a" marks adv.
+        cx.simulate_keystrokes(window.into(), "a a enter");
+        cx.run_until_parked();
+        let log = cx.read(|cx| view.read(cx).roll_log.clone());
+        assert_eq!(log.len(), 1, "{log:?}");
+        assert!(
+            log[0].starts_with("attack ") && log[0].ends_with("(adv)"),
+            "{log:?}"
+        );
+        // Save.
+        cx.simulate_keystrokes(window.into(), "v d e x enter");
+        cx.run_until_parked();
+        let log = cx.read(|cx| view.read(cx).roll_log.clone());
+        assert!(log[0].starts_with("Dex save"), "{log:?}");
+        // Check by skill prefix.
+        cx.simulate_keystrokes(window.into(), "c p e r enter");
+        cx.run_until_parked();
+        let log = cx.read(|cx| view.read(cx).roll_log.clone());
+        assert!(log[0].starts_with("Perception check"), "{log:?}");
+        // Damage expression with a type: resisted/vulnerable/no effect.
+        cx.simulate_keystrokes(window.into(), "x 2 d 6 enter");
+        cx.run_until_parked();
+        let log = cx.read(|cx| view.read(cx).roll_log.clone());
+        assert!(log[0].starts_with("2d6:"), "{log:?}");
+        assert_eq!(log.len(), 4);
     }
 
     #[gpui::test]
