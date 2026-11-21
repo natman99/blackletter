@@ -9,7 +9,13 @@ mod doc;
 
 use std::path::PathBuf;
 
-use blackletter_types::{Score, class::CastingMechanic, damage::DamageType, skills::Skill};
+use blackletter_types::{
+    Score,
+    class::CastingMechanic,
+    condition::{Condition, ConditionKind},
+    damage::DamageType,
+    skills::Skill,
+};
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable, KeyBinding,
     SharedString, WeakEntity, Window, actions, div, prelude::*,
@@ -238,6 +244,7 @@ impl SheetView {
             Section::Skills => 24,
             Section::Combat => COMBAT_ROWS,
             Section::Spells => self.slot_rows().len() + self.spell_rows().len(),
+            Section::Conditions => self.condition_rows(),
             _ => 0,
         }
     }
@@ -304,6 +311,7 @@ impl SheetView {
                 cx.notify();
             }
             Section::Combat => self.combat_adjust(delta, cx),
+            Section::Conditions => self.adjust_condition_duration(delta, cx),
             _ => {}
         }
     }
@@ -359,6 +367,12 @@ impl SheetView {
     ) {
         if self.section == Section::Spells {
             self.cast_spell(cx);
+            return;
+        }
+        if self.section == Section::Conditions {
+            self.doc.edit(|c| c.tick_conditions());
+            self.report("durations ticked; expired conditions removed", cx);
+            cx.notify();
             return;
         }
         let all = DamageType::ALL;
@@ -462,6 +476,7 @@ impl SheetView {
             Section::Skills => self.toggle_skill_or_save(cx),
             Section::Combat => self.combat_activate(cx),
             Section::Spells => self.toggle_spell_row(cx),
+            Section::Conditions => self.toggle_condition_row(cx),
             _ => {}
         }
         cx.notify();
@@ -783,6 +798,7 @@ impl SheetView {
             Section::Skills => self.skills_section(cx),
             Section::Combat => self.combat_section(cx),
             Section::Spells => self.spells_section(cx),
+            Section::Conditions => self.conditions_section(cx),
             other => div()
                 .p_2()
                 .text_sm()
@@ -1185,6 +1201,199 @@ impl SheetView {
                     .text_color(gpui::rgb(0x6c_70_86))
                     .child("j/k select  space spend-slot/toggle-prepared  t cast"),
             )
+            .into_any_element()
+    }
+
+    /// The fifteen SRD conditions (PHB appendix A), in a fixed picker order.
+    const KIND_ROWS: [ConditionKind; 15] = [
+        ConditionKind::Blinded,
+        ConditionKind::Charmed,
+        ConditionKind::Deafened,
+        ConditionKind::Exhaustion,
+        ConditionKind::Frightened,
+        ConditionKind::Grappled,
+        ConditionKind::Incapacitated,
+        ConditionKind::Invisible,
+        ConditionKind::Paralyzed,
+        ConditionKind::Petrified,
+        ConditionKind::Poisoned,
+        ConditionKind::Prone,
+        ConditionKind::Restrained,
+        ConditionKind::Stunned,
+        ConditionKind::Unconscious,
+    ];
+
+    fn custom_count(&self) -> usize {
+        self.doc
+            .character
+            .conditions
+            .conditions
+            .iter()
+            .filter(|c| matches!(c.kind, ConditionKind::Custom(_)))
+            .count()
+    }
+
+    fn condition_rows(&self) -> usize {
+        self.custom_count() + Self::KIND_ROWS.len()
+    }
+
+    fn toggle_condition_row(&mut self, cx: &mut Context<Self>) {
+        let customs = self.custom_count();
+        if self.sel < customs {
+            let victim = self
+                .doc
+                .character
+                .conditions
+                .conditions
+                .iter()
+                .filter(|c| matches!(c.kind, ConditionKind::Custom(_)))
+                .nth(self.sel)
+                .map(|c| c.kind.to_string())
+                .unwrap_or_default();
+            let mut i = 0;
+            self.doc.edit(|c| {
+                c.conditions.conditions.retain(|cond| {
+                    if matches!(cond.kind, ConditionKind::Custom(_)) {
+                        i += 1;
+                        i - 1 != self.sel
+                    } else {
+                        true
+                    }
+                });
+            });
+            self.report(format!("removed {victim}"), cx);
+            self.sel = self.sel.min(self.condition_rows().saturating_sub(1));
+            return;
+        }
+        let kind = Self::KIND_ROWS[self.sel - customs].clone();
+        let active = self
+            .doc
+            .character
+            .conditions
+            .conditions
+            .iter()
+            .any(|c| c.kind == kind);
+        if active {
+            self.doc.edit(|c| {
+                c.conditions.conditions.retain(|cond| cond.kind != kind);
+            });
+            self.report(format!("{kind} ended"), cx);
+        } else {
+            let added = self.doc.edit_return(|c| {
+                c.add_condition(Condition {
+                    kind: kind.clone(),
+                    desc: String::new(),
+                    duration: -1,
+                })
+            });
+            self.report(
+                if added {
+                    format!("{kind} applied (until removed)")
+                } else {
+                    format!("{kind}: immune")
+                },
+                cx,
+            );
+        }
+    }
+
+    fn adjust_condition_duration(&mut self, delta: i64, cx: &mut Context<Self>) {
+        let customs = self.custom_count();
+        let is_custom = self.sel < customs;
+        let idx_target = if is_custom {
+            self.doc
+                .character
+                .conditions
+                .conditions
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| matches!(c.kind, ConditionKind::Custom(_)))
+                .nth(self.sel)
+                .map(|(i, _)| i)
+        } else {
+            let kind = Self::KIND_ROWS[self.sel - customs].clone();
+            self.doc
+                .character
+                .conditions
+                .conditions
+                .iter()
+                .position(|c| c.kind == kind)
+        };
+        let Some(i) = idx_target else { return };
+        self.doc.edit(move |c| {
+            let cond = &mut c.conditions.conditions[i];
+            if delta > 0 {
+                // +/- on an indefinite (-1) condition starts a round timer.
+                cond.duration = if cond.duration < 0 {
+                    delta as i32
+                } else {
+                    cond.duration + delta as i32
+                };
+            } else {
+                cond.duration = (cond.duration + delta as i32).max(0);
+            }
+        });
+        let dur = self.doc.character.conditions.conditions[i].duration;
+        self.report(
+            format!(
+                "{} duration {dur}",
+                self.doc.character.conditions.conditions[i].kind
+            ),
+            cx,
+        );
+    }
+
+    fn conditions_section(&self, cx: &mut Context<Self>) -> AnyElement {
+        let c = &self.doc.character;
+        let mut rows: Vec<_> = c
+            .conditions
+            .conditions
+            .iter()
+            .filter(|cond| matches!(cond.kind, ConditionKind::Custom(_)))
+            .enumerate()
+            .map(|(i, cond)| {
+                self.row(
+                    i,
+                    format!("* {:<16}  duration {}", cond.kind, cond.duration),
+                    cx,
+                )
+            })
+            .collect();
+        let customs = rows.len();
+        rows.extend(Self::KIND_ROWS.iter().enumerate().map(|(j, kind)| {
+            let active = c
+                .conditions
+                .conditions
+                .iter()
+                .any(|cond| &cond.kind == kind);
+            let detail = if active {
+                let dur = c
+                    .conditions
+                    .conditions
+                    .iter()
+                    .find(|cond| &cond.kind == kind)
+                    .map_or(0, |cond| cond.duration);
+                format!("  (active, duration {dur})")
+            } else {
+                String::new()
+            };
+            self.row(
+                customs + j,
+                format!("{} {kind:<16}{detail}", if active { "*" } else { " " },),
+                cx,
+            )
+        }));
+        div()
+            .flex()
+            .flex_col()
+            .gap_0()
+            .p_2()
+            .child(
+                div()
+                    .text_sm()
+                    .child("space add/remove   +/- duration   t tick all durations"),
+            )
+            .children(rows)
             .into_any_element()
     }
 
@@ -1649,6 +1858,65 @@ mod tests {
             cx.read(|cx| view.read(cx).doc().character.spells.spells["shield"].prepared),
             "space toggles prepared for prepared casters"
         );
+    }
+
+    #[gpui::test]
+    fn conditions_add_tick_and_remove(cx: &mut TestAppContext) {
+        let (window, root) = open_sheet(cx);
+        let view = sheet(cx, &root);
+        cx.simulate_keystrokes(window.into(), "] ] ] ] ] ] ]"); // Conditions
+        cx.run_until_parked();
+        assert_eq!(cx.read(|cx| view.read(cx).section()), Section::Conditions);
+        // Row 0 is Blinded in the picker: apply it, then set a 2-round timer.
+        cx.simulate_keystrokes(window.into(), "space");
+        cx.run_until_parked();
+        assert_eq!(cx.read(|cx| view.read(cx).sel), 0);
+        assert!(cx.read(|cx| {
+            view.read(cx)
+                .doc()
+                .character
+                .conditions
+                .conditions
+                .iter()
+                .any(|c| c.kind.to_string() == "Blinded")
+        }));
+        cx.simulate_keystrokes(window.into(), "plus plus");
+        cx.run_until_parked();
+        // Two ticks expire it; the third tick would leave nothing to remove.
+        cx.simulate_keystrokes(window.into(), "t t");
+        cx.run_until_parked();
+        assert!(
+            cx.read(|cx| view
+                .read(cx)
+                .doc()
+                .character
+                .conditions
+                .conditions
+                .is_empty()),
+            "expired conditions are removed by tick_conditions"
+        );
+        // Space again removes the condition.
+        cx.simulate_keystrokes(window.into(), "space t");
+        cx.run_until_parked();
+        assert!(cx.read(|cx| {
+            view.read(cx)
+                .doc()
+                .character
+                .conditions
+                .conditions
+                .iter()
+                .any(|c| c.kind.to_string() == "Blinded")
+        }));
+        cx.simulate_keystrokes(window.into(), "space");
+        cx.run_until_parked();
+        assert!(cx.read(|cx| {
+            view.read(cx)
+                .doc()
+                .character
+                .conditions
+                .conditions
+                .is_empty()
+        }));
     }
 
     #[gpui::test]
