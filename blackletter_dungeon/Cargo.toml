@@ -1,0 +1,10 @@
+[package]
+name = "blackletter_dungeon"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+glam = { version = "0.33.6", features = ["serde"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+directories = "6.0.0"

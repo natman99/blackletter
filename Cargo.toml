@@ -2,6 +2,7 @@
 members = [
     "blackletter",
     "blackletter_cli",
+    "blackletter_dungeon",
     "blackletter_scripting",
     "blackletter_types",
 ]
