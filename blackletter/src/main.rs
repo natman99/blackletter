@@ -8,7 +8,8 @@ use root::RootView;
 fn main() {
     let app = gpui_platform::application();
     app.run(move |cx: &mut App| {
-        if let Err(e) = cx.open_window(
+        cx.bind_keys(root::keybindings());
+        let window = match cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
                     None,
@@ -21,10 +22,16 @@ fn main() {
                 }),
                 ..Default::default()
             },
-            |_, cx| cx.new(|_| RootView::new()),
+            |_, cx| cx.new(|cx| RootView::new(cx)),
         ) {
-            eprintln!("blackletter: {e}");
-            std::process::exit(1);
-        }
+            Ok(w) => w,
+            Err(e) => {
+                eprintln!("blackletter: {e}");
+                std::process::exit(1);
+            }
+        };
+        // The root takes the keyboard the moment it exists, so the global
+        // ctrl-1/ctrl-2 chords work before any click.
+        let _ = window.update(cx, |view, window, cx| window.focus(view.focus_handle(), cx));
     });
 }
