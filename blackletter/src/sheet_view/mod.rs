@@ -10,7 +10,7 @@ mod doc;
 use std::path::PathBuf;
 
 use blackletter_types::{
-    Score,
+    Item, Score,
     class::CastingMechanic,
     condition::{Condition, ConditionKind},
     damage::DamageType,
@@ -142,6 +142,8 @@ enum FieldTarget {
     Name,
     /// Numeric prompt: damage or heal amount.
     Amount(bool),
+    /// New inventory item name prompt.
+    NewItem,
 }
 
 /// The six ability rows in the Abilities section.
@@ -247,6 +249,8 @@ impl SheetView {
             Section::Combat => COMBAT_ROWS,
             Section::Spells => self.slot_rows().len() + self.spell_rows().len(),
             Section::Conditions => self.condition_rows(),
+            Section::Inventory => self.doc.character.inventory.0.len() + 1,
+            Section::Features => self.grant_rows().len(),
             _ => 0,
         }
     }
@@ -313,6 +317,7 @@ impl SheetView {
                 cx.notify();
             }
             Section::Combat => self.combat_adjust(delta, cx),
+            Section::Inventory => self.item_adjust(delta, cx),
             Section::Conditions => self.adjust_condition_duration(delta, cx),
             _ => {}
         }
@@ -490,6 +495,8 @@ impl SheetView {
             Section::Combat => self.combat_activate(cx),
             Section::Spells => self.toggle_spell_row(cx),
             Section::Conditions => self.toggle_condition_row(cx),
+            Section::Inventory => self.toggle_item_row(cx),
+            Section::Features => self.remove_grant_row(cx),
             _ => {}
         }
         cx.notify();
@@ -605,6 +612,33 @@ impl SheetView {
     }
 
     /// +/- inside the Combat section, per selected row.
+    /// +/- in the Inventory section: quantity up/down; a decrement that
+    /// reaches 0 removes the item entirely.
+    fn item_adjust(&mut self, delta: i64, cx: &mut Context<Self>) {
+        let Some((name, qty, _)) = self.item_rows().get(self.sel).cloned() else {
+            return;
+        };
+        let new = qty + delta as i32;
+        if new <= 0 && qty > 0 && delta < 0 {
+            let name_for_edit = name.clone();
+            self.doc.edit(move |c| {
+                c.inventory.0.remove(&name_for_edit);
+            });
+            self.report(format!("{name} removed from inventory"), cx);
+            self.sel = self
+                .sel
+                .min(self.doc.character.inventory.0.len().saturating_sub(1));
+        } else if new > 0 {
+            let name_for_edit = name.clone();
+            self.doc.edit(move |c| {
+                if let Some(it) = c.inventory.0.get_mut(&name_for_edit) {
+                    it.quantity = new;
+                }
+            });
+            self.report(format!("{name} x{new}"), cx);
+        }
+    }
+
     fn combat_adjust(&mut self, delta: i64, cx: &mut Context<Self>) {
         match self.sel {
             2 => {
@@ -646,6 +680,29 @@ impl SheetView {
                 if !text.is_empty() {
                     self.doc.edit(|c| c.name = text.clone());
                     self.report(format!("renamed to {text}"), cx);
+                }
+            }
+            FieldTarget::NewItem => {
+                let text = field.text().trim().to_string();
+                if text.is_empty() {
+                    self.report("item name needed", cx);
+                } else {
+                    let name = text.clone();
+                    let added = self.doc.try_edit(move |c| {
+                        Ok::<_, ()>(
+                            c.inventory
+                                .0
+                                .insert(name.clone(), Item::new(name))
+                                .is_none(),
+                        )
+                    });
+                    self.report(
+                        match added {
+                            Ok(true) => format!("added {text}"),
+                            _ => format!("{text} already in inventory"),
+                        },
+                        cx,
+                    );
                 }
             }
             FieldTarget::Amount(damage) => {
@@ -849,15 +906,9 @@ impl SheetView {
             Section::Combat => self.combat_section(cx),
             Section::Spells => self.spells_section(cx),
             Section::Conditions => self.conditions_section(cx),
-            other => div()
-                .p_2()
-                .text_sm()
-                .text_color(gpui::rgb(0x6c_70_86))
-                .child(format!(
-                    "{} — interactive editing lands in Task 3.2",
-                    other.label()
-                ))
-                .into_any_element(),
+            Section::Inventory => self.inventory_section(cx),
+            Section::Features => self.features_section(cx),
+            Section::Notes => self.notes_section(cx),
         }
     }
 
@@ -1447,6 +1498,221 @@ impl SheetView {
             .into_any_element()
     }
 
+    /// Inventory rows: the character's items, sorted by name.
+    fn item_rows(&self) -> Vec<(String, i32, bool)> {
+        self.doc
+            .character
+            .inventory
+            .0
+            .iter()
+            .map(|(name, it)| (name.clone(), it.quantity, it.equipped))
+            .collect()
+    }
+
+    fn inventory_section(&self, cx: &mut Context<Self>) -> AnyElement {
+        let rows: Vec<_> = self
+            .item_rows()
+            .into_iter()
+            .enumerate()
+            .map(|(i, (name, qty, equipped))| {
+                let mark = if equipped { "[e]" } else { "[ ]" };
+                let qty = if qty == 1 {
+                    String::new()
+                } else {
+                    format!(" x{qty}")
+                };
+                self.row(i, format!("{mark} {name}{qty}"), cx)
+            })
+            .collect();
+        div()
+            .flex()
+            .flex_col()
+            .gap_0()
+            .p_2()
+            .child(div().text_sm().child(format!(
+                "gold {}   items {}",
+                self.doc.character.gold,
+                self.item_rows().len()
+            )))
+            .children(rows)
+            .child(self.row(self.item_rows().len(), "+ add item (space)".into(), cx))
+            .child(
+                div()
+                    .mt_2()
+                    .text_sm()
+                    .text_color(gpui::rgb(0x6c_70_86))
+                    .child(
+                        "j/k select  space equip/unequip  +/- quantity\n(- to 0 removes the item)",
+                    ),
+            )
+            .into_any_element()
+    }
+
+    fn toggle_item_row(&mut self, cx: &mut Context<Self>) {
+        if self.sel == self.doc.character.inventory.0.len() {
+            self.field = Some((FieldTarget::NewItem, Field::new("")));
+            self.report("new item name — enter adds it", cx);
+            return;
+        }
+        let Some((name, _, equipped)) = self.item_rows().get(self.sel).cloned() else {
+            return;
+        };
+        let ok = self.doc.try_edit(|c| {
+            if equipped {
+                Ok::<_, ()>(c.unequip(&name))
+            } else {
+                Ok(c.equip(&name))
+            }
+        });
+        match ok {
+            Ok(true) => self.report(
+                format!(
+                    "{name} {}",
+                    if equipped { "unequipped" } else { "equipped" }
+                ),
+                cx,
+            ),
+            _ => self.report("nothing changed", cx),
+        }
+    }
+
+    /// Feature/feat/trait rows: name + effect summary.
+    fn grant_rows(&self) -> Vec<(String, String)> {
+        use std::fmt::Write as _;
+        let c = &self.doc.character;
+        let mut out = Vec::new();
+        for f in c
+            .features
+            .inner
+            .iter()
+            .map(|f| (&f.name, &f.effects[..]))
+            .chain(c.feats.iter().map(|f| {
+                (
+                    &f.name,
+                    f.feature.as_ref().map_or(&[][..], |x| &x.effects[..]),
+                )
+            }))
+            .chain(c.traits.iter().map(|t| {
+                (
+                    &t.name,
+                    t.feature.as_ref().map_or(&[][..], |x| &x.effects[..]),
+                )
+            }))
+        {
+            let mut sum = String::new();
+            for e in f.1.iter().take(4) {
+                if !sum.is_empty() {
+                    sum.push_str("; ");
+                }
+                let _ = write!(sum, "{e}");
+            }
+            if f.1.len() > 4 {
+                let _ = write!(sum, " (+{})", f.1.len() - 4);
+            }
+            out.push((f.0.clone(), sum));
+        }
+        out
+    }
+
+    fn features_section(&self, cx: &mut Context<Self>) -> AnyElement {
+        let rows: Vec<_> = self
+            .grant_rows()
+            .into_iter()
+            .enumerate()
+            .map(|(i, (name, effects))| {
+                let text = if effects.is_empty() {
+                    name
+                } else {
+                    format!("{name} — {effects}")
+                };
+                self.row(i, text, cx)
+            })
+            .collect();
+        div()
+            .flex()
+            .flex_col()
+            .gap_0()
+            .p_2()
+            .children(rows)
+            .child(
+                div()
+                    .mt_2()
+                    .text_sm()
+                    .text_color(gpui::rgb(0x6c_70_86))
+                    .child("j/k select  space removes the grant (ctrl-z undoes)"),
+            )
+            .into_any_element()
+    }
+
+    fn remove_grant_row(&mut self, cx: &mut Context<Self>) {
+        let Some((name, _)) = self.grant_rows().get(self.sel).cloned() else {
+            return;
+        };
+        let removed = self.doc.try_edit(|c| Ok::<_, ()>(c.remove_grant(&name)));
+        self.report(
+            match removed {
+                Ok(true) => format!("{name} removed (ctrl-z to undo)"),
+                _ => "nothing to remove".to_string(),
+            },
+            cx,
+        );
+    }
+
+    fn notes_section(&self, _cx: &mut Context<Self>) -> AnyElement {
+        let lore = &self.doc.character.lore;
+        let blocks = [
+            ("Backstory", &lore.backstory),
+            ("Personality", &lore.personality_traits),
+            ("Physical", &lore.physical_traits),
+            ("Allies", &lore.allies),
+            ("Enemies", &lore.enemies),
+        ];
+        let mut out = Vec::new();
+        for (label, text) in blocks {
+            if text.trim().is_empty() {
+                continue;
+            }
+            out.push(
+                div()
+                    .mb_2()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(gpui::rgb(0x8a_90_b0))
+                            .child(label.to_uppercase()),
+                    )
+                    .children(text.lines().map(|l| {
+                        div()
+                            .text_sm()
+                            .text_ellipsis()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .child(l.to_string())
+                    })),
+            );
+        }
+        if out.is_empty() {
+            out.push(
+                div()
+                    .text_sm()
+                    .text_color(gpui::rgb(0x6c_70_86))
+                    .child("no lore recorded"),
+            );
+        }
+        div()
+            .flex()
+            .flex_col()
+            .p_2()
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(gpui::rgb(0x6c_70_86))
+                    .child("lore (read-only here — edit via the vault or a future editor)"),
+            )
+            .children(out)
+            .into_any_element()
+    }
+
     fn combat_section(&self, cx: &mut Context<Self>) -> AnyElement {
         let c = &self.doc.character;
         let rows: Vec<_> = COMBAT_LABELS
@@ -1929,6 +2195,45 @@ mod tests {
             cx.read(|cx| view.read(cx).doc().character.spells.spells["shield"].prepared),
             "space toggles prepared for prepared casters"
         );
+    }
+
+    #[gpui::test]
+    fn inventory_add_equip_and_quantity(cx: &mut TestAppContext) {
+        let (window, root) = open_sheet(cx);
+        let view = sheet(cx, &root);
+        cx.simulate_keystrokes(window.into(), "] ] ] ] ]"); // Inventory
+        cx.run_until_parked();
+        assert_eq!(cx.read(|cx| view.read(cx).section()), Section::Inventory);
+        // Row 0 is the add-item row on an empty inventory.
+        cx.simulate_keystrokes(window.into(), "space");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "d a g g e r enter");
+        cx.run_until_parked();
+        let items = cx.read(|cx| {
+            view.read(cx)
+                .doc()
+                .character
+                .inventory
+                .0
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(items, vec!["dagger".to_string()]);
+        // +/- adjusts quantity; - back to zero removes.
+        cx.simulate_keystrokes(window.into(), "plus");
+        cx.run_until_parked();
+        assert_eq!(
+            cx.read(|cx| view.read(cx).doc().character.inventory.0["dagger"].quantity),
+            2
+        );
+        // space on the item equips it.
+        cx.simulate_keystrokes(window.into(), "space");
+        cx.run_until_parked();
+        assert!(cx.read(|cx| view.read(cx).doc().character.inventory.0["dagger"].equipped));
+        cx.simulate_keystrokes(window.into(), "minus minus");
+        cx.run_until_parked();
+        assert!(cx.read(|cx| view.read(cx).doc().character.inventory.0.is_empty()));
     }
 
     #[gpui::test]
