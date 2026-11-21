@@ -1063,6 +1063,7 @@ dependencies = [
  "glam",
  "gpui",
  "gpui_platform",
+ "rand 0.10.4",
  "rfd",
  "serde",
  "serde_json",

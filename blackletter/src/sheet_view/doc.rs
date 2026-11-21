@@ -64,6 +64,17 @@ impl SheetDoc {
         self.dirty = true;
     }
 
+    /// Snapshot, mutate, and hand back whatever `f` computed (roll results).
+    pub fn edit_return<T>(&mut self, f: impl FnOnce(&mut Character) -> T) -> T {
+        self.undo.push(self.character.clone());
+        if self.undo.len() > UNDO_CAP {
+            self.undo.remove(0);
+        }
+        self.redo.clear();
+        self.dirty = true;
+        f(&mut self.character)
+    }
+
     /// Fallible mutation: the snapshot is pushed and the change applied only
     /// when `f` succeeds, so failed attempts never pollute the undo stack.
     pub fn try_edit<T, E>(

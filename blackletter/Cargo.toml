@@ -15,6 +15,7 @@ gpui_platform = { workspace = true }
 rfd = { version = "0.18.0", default-features = false, features = ["xdg-portal"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
+rand = { workspace = true }
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }

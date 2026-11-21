@@ -70,6 +70,7 @@ impl RootView {
         }
     }
 
+    #[cfg(test)]
     pub fn focus_handle(&self) -> &FocusHandle {
         &self.focus_handle
     }
@@ -481,7 +482,7 @@ mod tests {
         });
         let window = cx.add_window(|_, cx| RootView::new(cx, Session::default(), None));
         window
-            .update(cx, |view, window, cx| window.focus(view.focus_handle(), cx))
+            .update(cx, |view, window, cx| window.focus(&view.focus_handle, cx))
             .unwrap();
         let root = window.root(cx).unwrap();
         (window, root)
@@ -515,7 +516,7 @@ mod tests {
         let window =
             cx.add_window(|_, cx| RootView::new(cx, Session::default(), Some(path.clone())));
         window
-            .update(cx, |view, window, cx| window.focus(view.focus_handle(), cx))
+            .update(cx, |view, window, cx| window.focus(&view.focus_handle, cx))
             .unwrap();
         cx.simulate_keystrokes(window.into(), "ctrl-2");
         cx.run_until_parked();

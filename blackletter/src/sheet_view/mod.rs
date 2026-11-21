@@ -9,7 +9,7 @@ mod doc;
 
 use std::path::PathBuf;
 
-use blackletter_types::Score;
+use blackletter_types::{Score, damage::DamageType, skills::Skill};
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable, KeyBinding,
     SharedString, WeakEntity, Window, actions, div, prelude::*,
@@ -35,6 +35,12 @@ actions!(
         SelectClassDown,
         LevelUp,
         LevelDown,
+        ToggleRow,
+        QuickDamage,
+        CycleDamageType,
+        RollDeathSave,
+        ShortRest,
+        LongRest,
     ]
 );
 
@@ -47,14 +53,23 @@ pub fn keybindings() -> Vec<KeyBinding> {
         };
     }
     bind!(
-        "tab" => NextSection,
-        "shift-tab" => PrevSection,
+        // NB: not tab/shift-tab — gpui's default focus traversal fires even
+        // when a context binding matches, which silently steals input focus
+        // from the view's Field. Brackets keep the keyboard contract honest.
+        "]" => NextSection,
+        "[" => PrevSection,
         "j" => SelectClassDown,
         "k" => SelectClassUp,
         "plus" => LevelUp,
         "equal" => LevelUp,
         "minus" => LevelDown,
         "enter" => EditName,
+        "space" => ToggleRow,
+        "d" => QuickDamage,
+        "t" => CycleDamageType,
+        "r" => RollDeathSave,
+        "s" => ShortRest,
+        "shift-s" => LongRest,
         "ctrl-z" => Undo,
         "ctrl-shift-z" => Redo,
         "ctrl-s" => Save,
@@ -119,7 +134,32 @@ impl Section {
 #[derive(Debug, Clone, Copy)]
 enum FieldTarget {
     Name,
+    /// Numeric prompt: damage or heal amount.
+    Amount(bool),
 }
+
+/// The six ability rows in the Abilities section.
+const SCORE_ROWS: [Score; 6] = [
+    Score::Str,
+    Score::Dex,
+    Score::Con,
+    Score::Int,
+    Score::Wis,
+    Score::Cha,
+];
+
+/// The action rows in the Combat section.
+const COMBAT_ROWS: usize = 8;
+const COMBAT_LABELS: [&str; COMBAT_ROWS] = [
+    "apply damage (amount via d)",
+    "heal (amount via enter)",
+    "HP bonus (+/-)",
+    "AC flat override (space toggles)",
+    "gold (+/-)",
+    "exhaustion (+/-)",
+    "short rest (space)",
+    "long rest (space)",
+];
 
 pub struct SheetView {
     doc: SheetDoc,
@@ -130,6 +170,10 @@ pub struct SheetView {
     focus_handle: FocusHandle,
     /// Index of the class the +/- keys act on (multiclass editing).
     class_sel: usize,
+    /// Row selection inside the active section (reset on section change).
+    sel: usize,
+    /// Damage type the quick-damage keys cycle through (for resistances).
+    damage_type: DamageType,
     field: Option<(FieldTarget, Field)>,
     blank: Field,
 }
@@ -148,6 +192,8 @@ impl SheetView {
             section: Section::Basic,
             focus_handle: cx.focus_handle(),
             class_sel: 0,
+            sel: 0,
+            damage_type: DamageType::Bludgeoning,
             field: None,
             blank: Field::new(""),
         }
@@ -174,19 +220,33 @@ impl SheetView {
 
     fn on_next_section(&mut self, _: &NextSection, _: &mut Window, cx: &mut Context<Self>) {
         self.section = self.section.next();
+        self.sel = 0;
         cx.notify();
     }
 
     fn on_prev_section(&mut self, _: &PrevSection, _: &mut Window, cx: &mut Context<Self>) {
         self.section = self.section.prev();
+        self.sel = 0;
         cx.notify();
     }
 
-    fn on_select_class_up(&mut self, _: &SelectClassUp, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.doc.character.classes.classes.is_empty() {
-            self.class_sel = self.class_sel.saturating_sub(1);
-            cx.notify();
+    /// Number of selectable rows in the active section.
+    fn rows(&self) -> usize {
+        match self.section {
+            Section::Basic => self.doc.character.classes.classes.len(),
+            Section::Abilities => 6,
+            Section::Skills => 24,
+            Section::Combat => COMBAT_ROWS,
+            _ => 0,
         }
+    }
+
+    fn on_select_class_up(&mut self, _: &SelectClassUp, _: &mut Window, cx: &mut Context<Self>) {
+        match self.section {
+            Section::Basic => self.class_sel = self.class_sel.saturating_sub(1),
+            _ => self.sel = self.sel.saturating_sub(1),
+        }
+        cx.notify();
     }
 
     fn on_select_class_down(
@@ -195,21 +255,56 @@ impl SheetView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let n = self.doc.character.classes.classes.len();
-        if n > 0 {
-            self.class_sel = (self.class_sel + 1).min(n - 1);
-            cx.notify();
+        match self.section {
+            Section::Basic => {
+                let n = self.doc.character.classes.classes.len();
+                if n > 0 {
+                    self.class_sel = (self.class_sel + 1).min(n - 1);
+                }
+            }
+            _ => {
+                let n = self.rows();
+                if n > 0 {
+                    self.sel = (self.sel + 1).min(n - 1);
+                }
+            }
         }
+        cx.notify();
     }
 
-    /// Level the selected class. SRD bounds 1..=20; every level change
-    /// re-derives proficiency bonus and spell slots (engine sync).
     fn on_level_up(&mut self, _: &LevelUp, _: &mut Window, cx: &mut Context<Self>) {
-        self.change_level(1, cx);
+        self.on_adjust(1, cx);
     }
 
     fn on_level_down(&mut self, _: &LevelDown, _: &mut Window, cx: &mut Context<Self>) {
-        self.change_level(-1, cx);
+        self.on_adjust(-1, cx);
+    }
+
+    /// `+`/`-` is section-aware: class level in Basic, ability score in
+    /// Abilities, exhaustion in Combat.
+    fn on_adjust(&mut self, delta: i64, cx: &mut Context<Self>) {
+        match self.section {
+            Section::Basic => self.change_level(delta, cx),
+            Section::Abilities => {
+                let idx = self.sel.min(5);
+                let _ = self.doc.try_edit(|c| {
+                    let mut scores = [
+                        &mut c.ability_scores.str,
+                        &mut c.ability_scores.dex,
+                        &mut c.ability_scores.con,
+                        &mut c.ability_scores.int,
+                        &mut c.ability_scores.wis,
+                        &mut c.ability_scores.cha,
+                    ];
+                    let s = &mut scores[idx];
+                    s.base = (s.base + delta).clamp(1, 30);
+                    Ok::<_, ()>(Some(()))
+                });
+                cx.notify();
+            }
+            Section::Combat => self.combat_adjust(delta, cx),
+            _ => {}
+        }
     }
 
     fn change_level(&mut self, delta: i64, cx: &mut Context<Self>) {
@@ -241,6 +336,226 @@ impl SheetView {
         cx.notify();
     }
 
+    // ---- combat: damage/heal/rest/death saves (engine is the source) ----
+
+    fn on_quick_damage(&mut self, _: &QuickDamage, _: &mut Window, cx: &mut Context<Self>) {
+        self.field = Some((FieldTarget::Amount(true), Field::new("")));
+        self.report(
+            format!(
+                "damage amount (type: {:?}) — enter applies",
+                self.damage_type,
+            ),
+            cx,
+        );
+        cx.notify();
+    }
+
+    fn on_cycle_damage_type(
+        &mut self,
+        _: &CycleDamageType,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let all = DamageType::ALL;
+        let i = all.iter().position(|d| *d == self.damage_type).unwrap_or(0);
+        self.damage_type = all[(i + 1) % all.len()];
+        self.report(format!("damage type: {:?}", self.damage_type), cx);
+        cx.notify();
+    }
+
+    fn apply_damage(&mut self, amount: i64, cx: &mut Context<Self>) {
+        let kind = self.damage_type;
+        let outcome = self.doc.try_edit(|c| {
+            if c.health.current == 0 {
+                c.damage_while_down(amount, false);
+                return Ok::<_, ()>(None);
+            }
+            let dealt = c.apply_resistance(kind, true, amount);
+            c.health.current = (c.health.current - dealt).max(0);
+            let conc = c
+                .concentration_save(&mut rand::rng(), dealt)
+                .map(|s| (s.spell_name, s.broken));
+            Ok(Some((dealt, conc)))
+        });
+        match outcome {
+            Ok(Some((dealt, conc))) => {
+                let mut line = format!(
+                    "{amount} {:?} -> {dealt} dealt (HP {})",
+                    kind, self.doc.character.health.current
+                );
+                if let Some((name, broken)) = conc {
+                    line += &format!(
+                        "; concentration on {name} {}",
+                        if broken { "BROKEN" } else { "held" }
+                    );
+                }
+                self.report(line, cx);
+            }
+            Ok(None) => self.report(format!("{amount} damage while down (HP 0)",), cx),
+            Err(()) => unreachable!("try_edit closure never errors here"),
+        }
+        cx.notify();
+    }
+
+    fn apply_heal(&mut self, amount: i64, cx: &mut Context<Self>) {
+        self.doc.edit(|c| {
+            c.health.current = (c.health.current + amount).min(c.max_health_total());
+        });
+        self.report(
+            format!("healed {amount} (HP {})", self.doc.character.health.current),
+            cx,
+        );
+        cx.notify();
+    }
+
+    fn on_roll_death_save(&mut self, _: &RollDeathSave, _: &mut Window, cx: &mut Context<Self>) {
+        let outcome = self.doc.edit_return(|c| {
+            let (roll, outcome) = c.roll_death_save(&mut rand::rng());
+            (roll.natural, outcome)
+        });
+        let ds = &self.doc.character.death_saves;
+        self.report(
+            format!(
+                "death save: nat {:?} -> {:?} ({}S/{}F{})",
+                outcome.0,
+                outcome.1,
+                ds.successes,
+                ds.failures,
+                if ds.stable { ", stable" } else { "" }
+            ),
+            cx,
+        );
+        if self.doc.character.is_dead() {
+            self.report("THE CHARACTER IS DEAD", cx);
+        }
+        cx.notify();
+    }
+
+    fn do_short_rest(&mut self, cx: &mut Context<Self>) {
+        self.doc.edit(|c| c.short_rest());
+        self.report("short rest — hit dice and short-rest meters restored", cx);
+        cx.notify();
+    }
+
+    fn do_long_rest(&mut self, cx: &mut Context<Self>) {
+        self.doc.edit(|c| c.long_rest());
+        self.report("long rest — HP full, slots restored, exhaustion -1", cx);
+        cx.notify();
+    }
+
+    fn on_short_rest(&mut self, _: &ShortRest, _: &mut Window, cx: &mut Context<Self>) {
+        self.do_short_rest(cx);
+    }
+
+    fn on_long_rest(&mut self, _: &LongRest, _: &mut Window, cx: &mut Context<Self>) {
+        self.do_long_rest(cx);
+    }
+
+    /// space: activate the selected row (skills/saves toggles, combat actions).
+    fn on_toggle_row(&mut self, _: &ToggleRow, _: &mut Window, cx: &mut Context<Self>) {
+        match self.section {
+            Section::Skills => self.toggle_skill_or_save(cx),
+            Section::Combat => self.combat_activate(cx),
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    fn toggle_skill_or_save(&mut self, cx: &mut Context<Self>) {
+        if self.sel < 18 {
+            let skill = Skill::ALL[self.sel];
+            self.doc.edit(|c| {
+                c.skills.proficiencies.toggle(skill);
+            });
+            let prof = self.doc.character.skills.proficiencies.contains(skill);
+            self.report(
+                format!(
+                    "{} {}",
+                    skill,
+                    if prof { "proficient" } else { "not proficient" }
+                ),
+                cx,
+            );
+        } else if let Some(score) = SCORE_ROWS.get(self.sel - 18).copied() {
+            let now = self.doc.try_edit(move |c| {
+                let flag = match score {
+                    Score::Str => &mut c.saving_throws.str,
+                    Score::Dex => &mut c.saving_throws.dex,
+                    Score::Con => &mut c.saving_throws.con,
+                    Score::Int => &mut c.saving_throws.int,
+                    Score::Wis => &mut c.saving_throws.wis,
+                    Score::Cha => &mut c.saving_throws.cha,
+                };
+                *flag = !*flag;
+                Ok::<_, ()>(*flag)
+            });
+            if let Ok(on) = now {
+                self.report(
+                    format!(
+                        "{score} save {}",
+                        if on { "proficient" } else { "not proficient" }
+                    ),
+                    cx,
+                );
+            }
+        }
+    }
+
+    fn combat_activate(&mut self, cx: &mut Context<Self>) {
+        match self.sel {
+            0 => {
+                self.field = Some((FieldTarget::Amount(true), Field::new("")));
+                self.report("damage amount — enter applies", cx);
+            }
+            1 => {
+                self.field = Some((FieldTarget::Amount(false), Field::new("")));
+                self.report("heal amount — enter applies", cx);
+            }
+            3 => {
+                let on = self.doc.edit_return(|c| {
+                    c.armor_class.flat = match c.armor_class.flat {
+                        Some(_) => None,
+                        None => Some(c.armor_class_total()),
+                    };
+                    c.armor_class.flat
+                });
+                self.report(
+                    match on {
+                        Some(v) => format!("AC pinned to {v}"),
+                        None => "AC derived from gear and Dex again".to_string(),
+                    },
+                    cx,
+                );
+            }
+            6 => self.do_short_rest(cx),
+            7 => self.do_long_rest(cx),
+            _ => {}
+        }
+    }
+
+    /// +/- inside the Combat section, per selected row.
+    fn combat_adjust(&mut self, delta: i64, cx: &mut Context<Self>) {
+        match self.sel {
+            2 => {
+                self.doc.edit(|c| {
+                    c.health.bonus = (c.health.bonus + delta).max(0);
+                });
+                self.report(format!("temp HP {}", self.doc.character.health.bonus), cx);
+            }
+            4 => {
+                self.doc.edit(|c| c.gold = (c.gold + delta).max(0));
+                self.report(format!("gold {}", self.doc.character.gold), cx);
+            }
+            5 => {
+                let lvl = (self.doc.character.exhaustion as i64 + delta).clamp(0, 6) as u8;
+                self.doc.edit(|c| c.set_exhaustion(lvl));
+                self.report(format!("exhaustion {lvl}"), cx);
+            }
+            _ => self.report("+/- does nothing on this row", cx),
+        }
+        cx.notify();
+    }
+
     fn on_edit_name(&mut self, _: &EditName, _: &mut Window, cx: &mut Context<Self>) {
         let initial = self.doc.character.name.clone();
         let mut f = Field::new(&initial);
@@ -260,6 +575,19 @@ impl SheetView {
                 if !text.is_empty() {
                     self.doc.edit(|c| c.name = text.clone());
                     self.report(format!("renamed to {text}"), cx);
+                }
+            }
+            FieldTarget::Amount(damage) => {
+                let text = field.text().trim().to_string();
+                match text.parse::<i64>() {
+                    Ok(n) if n > 0 => {
+                        if damage {
+                            self.apply_damage(n, cx);
+                        } else {
+                            self.apply_heal(n, cx);
+                        }
+                    }
+                    _ => self.report("enter a positive whole number", cx),
                 }
             }
         }
@@ -363,6 +691,7 @@ impl SheetView {
                     }))
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.section = *s;
+                        this.sel = 0;
                         cx.notify();
                     }))
                     .child(s.label())
@@ -372,7 +701,7 @@ impl SheetView {
                     .mt_2()
                     .text_xs()
                     .text_color(gpui::rgb(0x6c_70_86))
-                    .child("tab: sections\nj/k: class  +/-: level\nenter: name  ctrl-s: save"),
+                    .child("[]: sections\nj/k: class  +/-: level\nenter: name  ctrl-s: save"),
             )
     }
 
@@ -444,7 +773,9 @@ impl SheetView {
     fn center(&self, cx: &mut Context<Self>) -> AnyElement {
         match self.section {
             Section::Basic => self.basic_section(cx),
-            Section::Abilities => self.abilities_section(),
+            Section::Abilities => self.abilities_section(cx),
+            Section::Skills => self.skills_section(cx),
+            Section::Combat => self.combat_section(cx),
             other => div()
                 .p_2()
                 .text_sm()
@@ -528,34 +859,171 @@ impl SheetView {
             .into_any_element()
     }
 
-    fn abilities_section(&self) -> AnyElement {
+    fn row(&self, i: usize, text: String, cx: &mut Context<Self>) -> AnyElement {
+        let selected = i == self.sel;
+        div()
+            .id(("row", i))
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .when(selected, |d| d.bg(gpui::rgb(0x35_35_48)))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.sel = i;
+                cx.notify();
+            }))
+            .child(text)
+            .into_any_element()
+    }
+
+    fn abilities_section(&self, cx: &mut Context<Self>) -> AnyElement {
         let c = &self.doc.character;
-        let scores = [
-            ("Strength", Score::Str, c.ability_scores.str.base),
-            ("Dexterity", Score::Dex, c.ability_scores.dex.base),
-            ("Constitution", Score::Con, c.ability_scores.con.base),
-            ("Intelligence", Score::Int, c.ability_scores.int.base),
-            ("Wisdom", Score::Wis, c.ability_scores.wis.base),
-            ("Charisma", Score::Cha, c.ability_scores.cha.base),
-        ];
         div()
             .flex()
             .flex_col()
             .gap_1()
             .p_2()
-            .children(scores.into_iter().map(|(label, score, base)| {
-                div()
-                    .flex()
-                    .gap_2()
-                    .child(div().w(gpui::px(120.)).child(label))
-                    .child(format!("{base} ({:+})", c.ability_modifier_for(score)))
-            }))
+            .children(
+                SCORE_ROWS
+                    .iter()
+                    .enumerate()
+                    .map(|(i, score)| {
+                        let base = c.ability_scores.get(score).base;
+                        self.row(
+                            i,
+                            format!(
+                                "{:<14} {:>3}  ({:+})",
+                                format!("{score}"),
+                                base,
+                                c.ability_modifier_for(*score)
+                            ),
+                            cx,
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )
             .child(
                 div()
                     .mt_2()
                     .text_sm()
                     .text_color(gpui::rgb(0x6c_70_86))
-                    .child("score editing lands in Task 3.2"),
+                    .child("j/k select  +/- adjust score (3-30)"),
+            )
+            .into_any_element()
+    }
+
+    fn skills_section(&self, cx: &mut Context<Self>) -> AnyElement {
+        let c = &self.doc.character;
+        let skills: Vec<_> = Skill::ALL
+            .iter()
+            .enumerate()
+            .map(|(i, skill)| {
+                let prof = c.skills.proficiencies.contains(*skill);
+                let total = c.skills.check(skill, &c.ability_scores);
+                self.row(
+                    i,
+                    format!(
+                        "{} {:<16} {:>+4}  ({})",
+                        if prof { "*" } else { " " },
+                        skill.to_string(),
+                        total,
+                        c.skills.score_for(skill),
+                    ),
+                    cx,
+                )
+            })
+            .collect();
+        let saves: Vec<_> = SCORE_ROWS
+            .iter()
+            .enumerate()
+            .map(|(i, score)| {
+                let on = match score {
+                    Score::Str => c.saving_throws.str,
+                    Score::Dex => c.saving_throws.dex,
+                    Score::Con => c.saving_throws.con,
+                    Score::Int => c.saving_throws.int,
+                    Score::Wis => c.saving_throws.wis,
+                    Score::Cha => c.saving_throws.cha,
+                };
+                self.row(
+                    18 + i,
+                    format!(
+                        "{} {:<16} save",
+                        if on { "*" } else { " " },
+                        format!("{score}")
+                    ),
+                    cx,
+                )
+            })
+            .collect();
+        div()
+            .flex()
+            .flex_col()
+            .gap_0()
+            .p_2()
+            .children(skills)
+            .child(
+                div()
+                    .mt_2()
+                    .text_sm()
+                    .text_color(gpui::rgb(0x6c_70_86))
+                    .child("SAVING THROWS"),
+            )
+            .children(saves)
+            .child(
+                div()
+                    .mt_2()
+                    .text_sm()
+                    .text_color(gpui::rgb(0x6c_70_86))
+                    .child("j/k select  space toggles proficiency (* = proficient)"),
+            )
+            .into_any_element()
+    }
+
+    fn combat_section(&self, cx: &mut Context<Self>) -> AnyElement {
+        let c = &self.doc.character;
+        let rows: Vec<_> = COMBAT_LABELS
+            .iter()
+            .enumerate()
+            .map(|(i, label)| {
+                let detail = match i {
+                    0 => format!("  [type: {:?}]", self.damage_type),
+                    2 => format!("  (temp {})", c.health.bonus),
+                    3 => match c.armor_class.flat {
+                        Some(v) => format!("  (pinned at {v})"),
+                        None => "  (derived)".to_string(),
+                    },
+                    4 => format!("  (gold {})", c.gold),
+                    5 => format!("  (level {})", c.exhaustion),
+                    _ => String::new(),
+                };
+                self.row(i, format!("{label}{detail}"), cx)
+            })
+            .collect();
+        let ds = &c.death_saves;
+        div()
+            .flex()
+            .flex_col()
+            .gap_0()
+            .p_2()
+            .child(
+                div()
+                    .text_sm()
+                    .child(format!(
+                        "HP {} / {}   death saves: {}S / {}F{}",
+                        c.health.current,
+                        c.max_health_total(),
+                        ds.successes,
+                        ds.failures,
+                        if ds.stable { "  STABLE" } else { "" }
+                    )),
+            )
+            .children(rows)
+            .child(
+                div()
+                    .mt_2()
+                    .text_sm()
+                    .text_color(gpui::rgb(0x6c_70_86))
+                    .child("j/k select  space activates  d damage  t cycle type\nr death save  s/S rest"),
             )
             .into_any_element()
     }
@@ -695,12 +1163,28 @@ impl Render for SheetView {
             .on_action(cx.listener(Self::on_undo))
             .on_action(cx.listener(Self::on_redo))
             .on_action(cx.listener(Self::on_save))
+            .on_action(cx.listener(Self::on_toggle_row))
+            .on_action(cx.listener(Self::on_quick_damage))
+            .on_action(cx.listener(Self::on_cycle_damage_type))
+            .on_action(cx.listener(Self::on_roll_death_save))
+            .on_action(cx.listener(Self::on_short_rest))
+            .on_action(cx.listener(Self::on_long_rest))
             .child(self.nav(cx))
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .overflow_hidden()
+                    .flex()
+                    .flex_col()
+                    .when_some(self.field.as_ref(), |d, _| {
+                        d.child(
+                            div()
+                                .mb_1()
+                                .w(gpui::px(320.))
+                                .child(FieldElement::new(cx.entity())),
+                        )
+                    })
                     .child(self.center(cx)),
             )
             .child(self.summary())
@@ -789,14 +1273,134 @@ mod tests {
     }
 
     #[gpui::test]
+    fn space_toggles_skill_proficiency_and_moves_the_check(cx: &mut TestAppContext) {
+        let (window, root) = open_sheet(cx);
+        let view = sheet(cx, &root);
+        cx.simulate_keystrokes(window.into(), "] ]"); // Skills
+        cx.run_until_parked();
+        let before = cx.read(|cx| {
+            let c = &view.read(cx).doc().character;
+            c.skills.check(&Skill::Athletics, &c.ability_scores)
+        });
+        cx.simulate_keystrokes(window.into(), "space");
+        cx.run_until_parked();
+        let (prof, after) = cx.read(|cx| {
+            let c = &view.read(cx).doc().character;
+            (
+                c.skills.proficiencies.contains(Skill::Acrobatics),
+                c.skills.check(&Skill::Acrobatics, &c.ability_scores),
+            )
+        });
+        assert!(prof, "row 0 is Acrobatics (Skill::ALL is alphabetical)");
+        assert_eq!(after, before + 2, "PB is +2 at level 1");
+        cx.simulate_keystrokes(window.into(), "space"); // toggle back
+        cx.run_until_parked();
+        assert!(!cx.read(|cx| {
+            view.read(cx)
+                .doc()
+                .character
+                .skills
+                .proficiencies
+                .contains(Skill::Acrobatics)
+        }));
+    }
+
+    #[gpui::test]
+    fn damage_respects_concentration_and_rest_restores(cx: &mut TestAppContext) {
+        let (window, root) = open_sheet(cx);
+        let view = sheet(cx, &root);
+        view.update(cx, |v, _| {
+            v.doc.edit(|c| {
+                c.start_concentration("Haste", 13);
+            });
+        });
+        cx.simulate_keystrokes(window.into(), "] ] ]"); // Combat
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "d");
+        cx.run_until_parked();
+        assert!(
+            cx.read(|cx| view.read(cx).field.is_some()),
+            "d opens the damage field"
+        );
+        cx.simulate_keystrokes(window.into(), "4");
+        cx.run_until_parked();
+        assert_eq!(
+            cx.read(|cx| view.read(cx).field.as_ref().unwrap().1.text().to_string()),
+            "4"
+        );
+        cx.simulate_keystrokes(window.into(), "enter");
+        cx.run_until_parked();
+        let (hp, conc) = cx.read(|cx| {
+            let c = &view.read(cx).doc().character;
+            (
+                c.health.current,
+                c.concentrating.as_ref().map(|k| k.spell_name.clone()),
+            )
+        });
+        assert_eq!(hp, 6, "4 bludgeoning against nothing resisted");
+        // The concentration save is a real d20 roll: Haste survives on a save,
+        // is broken otherwise. Either is consistent; anything else is not.
+        assert!(
+            conc.as_deref().is_none_or(|s| s == "Haste"),
+            "concentration is kept or broken, never renamed"
+        );
+
+        // Long rest brings HP back to full.
+        cx.simulate_keystrokes(window.into(), "shift-s");
+        cx.run_until_parked();
+        let full = cx.read(|cx| {
+            let c = &view.read(cx).doc().character;
+            (c.health.current, c.max_health_total())
+        });
+        assert_eq!(full.0, full.1);
+    }
+
+    #[gpui::test]
+    fn ability_plus_minus_moves_score_and_modifier(cx: &mut TestAppContext) {
+        let (window, root) = open_sheet(cx);
+        let view = sheet(cx, &root);
+        cx.simulate_keystrokes(window.into(), "]"); // Abilities
+        cx.run_until_parked();
+        cx.simulate_keystrokes(
+            window.into(),
+            "equal equal equal equal equal equal equal equal equal",
+        );
+        cx.run_until_parked();
+        let (base, modifier) = cx.read(|cx| {
+            let c = &view.read(cx).doc().character;
+            (
+                c.ability_scores.str.base,
+                c.ability_modifier_for(Score::Str),
+            )
+        });
+        assert_eq!(base, 19, "default 10 + 9 presses");
+        assert_eq!(modifier, 4);
+    }
+
+    #[gpui::test]
+    fn focus_survives_section_navigation(cx: &mut TestAppContext) {
+        let (window, root) = open_sheet(cx);
+        let _view = sheet(cx, &root);
+        let before = window
+            .update(cx, |_, window, cx| window.focused(cx))
+            .unwrap();
+        cx.simulate_keystrokes(window.into(), "]");
+        cx.run_until_parked();
+        let after = window
+            .update(cx, |_, window, cx| window.focused(cx))
+            .unwrap();
+        assert_eq!(before, after, "focus must not move on section change");
+    }
+
+    #[gpui::test]
     fn tab_walks_sections(cx: &mut TestAppContext) {
         let (window, root) = open_sheet(cx);
         let view = sheet(cx, &root);
         assert_eq!(cx.read(|cx| view.read(cx).section()), Section::Basic);
-        cx.simulate_keystrokes(window.into(), "tab tab");
+        cx.simulate_keystrokes(window.into(), "] ]");
         cx.run_until_parked();
         assert_eq!(cx.read(|cx| view.read(cx).section()), Section::Skills);
-        cx.simulate_keystrokes(window.into(), "shift-tab");
+        cx.simulate_keystrokes(window.into(), "[");
         cx.run_until_parked();
         assert_eq!(cx.read(|cx| view.read(cx).section()), Section::Abilities);
     }
