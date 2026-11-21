@@ -4,8 +4,8 @@ use std::{
 };
 
 use blackletter_types::{
-    AbilityScores, ArmorClass, Character, Concentration, HitPoints, Initiative, Inventory,
-    WalkingSpeed,
+    AbilityScores, ArmorClass, Background, Character, Concentration, HitPoints, Initiative,
+    Inventory, WalkingSpeed,
     ability_score::AbilityScore,
     class::{Class, Classes},
     condition::Conditions,
@@ -128,6 +128,7 @@ impl Interface {
             spell_slots_override,
             needs_spell_prep,
             concentrating,
+            background,
         } = Character::default();
 
         let armor_class = armor_class.flat;
@@ -171,6 +172,10 @@ impl Interface {
         match concentrating {
             Some(c) => scope.push("concentrating", c),
             None => scope.push("concentrating", ()),
+        };
+        match background {
+            Some(b) => scope.push("background", b),
+            None => scope.push("background", ()),
         };
 
         // We should run automated additions including adding meters, abilities, calculating health, and applying item stats.
@@ -222,6 +227,7 @@ impl Interface {
             spell_slots_override,
             needs_spell_prep,
             concentrating,
+            background,
         } = character;
 
         let armor_class = armor_class.flat;
@@ -272,6 +278,10 @@ impl Interface {
         match concentrating {
             Some(c) => scope.push("concentrating", c),
             None => scope.push("concentrating", ()),
+        };
+        match background {
+            Some(b) => scope.push("background", b),
+            None => scope.push("background", ()),
         };
     }
 
@@ -338,8 +348,10 @@ impl Interface {
             extract_opt!("spell_slots_override", "spell_slots_override", Vec<i64>)?;
         let needs_spell_prep = extract!("needs_spell_prep", "needs_spell_prep")?;
         let concentrating = extract_opt!("concentrating", "concentrating", Concentration)?;
+        let background = extract_opt!("background", "background", Background)?;
 
         Ok(Character {
+            background,
             concentrating,
             needs_spell_prep,
             name,

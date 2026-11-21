@@ -9,6 +9,7 @@ use std::{collections::BTreeMap, fmt::Display};
 use strum::EnumString;
 
 pub mod ability_score;
+pub mod background;
 pub mod class;
 mod hit_points;
 mod item;
@@ -32,6 +33,7 @@ pub mod source;
 pub mod spell_slots;
 pub mod traits;
 
+pub use background::Background;
 pub use hit_points::HitPoints;
 pub use item::Item;
 
@@ -91,6 +93,10 @@ pub struct Character {
     /// Exhaustion level 0..=6 (SRD). Set directly for house rules; the
     /// effects are derived in `Modifiers::finish`.
     pub exhaustion: u8,
+    /// The character's background, if chosen. Its mechanical effects
+    /// (skill proficiencies) flow through `modifiers()` like other grants.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub background: Option<Background>,
     /// The spell currently being concentrated on, if any. SRD
     /// "Concentration" (`Wiki/08 spellcasting.md:120-129`): casting
     /// another concentration spell breaks the old; damage forces a CON
@@ -123,6 +129,7 @@ impl Character {
             health,
             needs_spell_prep: false,
             concentrating: None,
+            background: None,
             classes: Classes {
                 classes: vec![Class {
                     level: Level(level),
@@ -216,6 +223,9 @@ impl Character {
         }
         if let Some(race) = &self.race {
             m.absorb(race);
+        }
+        if let Some(bg) = &self.background {
+            m.absorb(bg);
         }
         for c in &self.conditions.conditions {
             m.absorb_condition(c);
@@ -941,6 +951,7 @@ impl Default for Character {
             race: Some(Race::new("Elf")),
             needs_spell_prep: false,
             concentrating: None,
+            background: None,
             gold: 0,
             classes: Default::default(),
             initiative: Default::default(),
@@ -1372,6 +1383,29 @@ mod tests {
         );
         fighter.long_rest();
         assert!(!fighter.needs_spell_prep, "non-casters get no prompt");
+    }
+
+    #[test]
+    fn background_grants_skill_proficiencies() {
+        use crate::background::Background;
+        use crate::skills::Skill;
+        let mut sheet = Character::default();
+        let before = sheet.skill_check(&Skill::Insight);
+        sheet.background = Some(Background {
+            name: "Acolyte".into(),
+            skill_proficiencies: vec![Skill::Insight, Skill::Religion],
+            gold: 15,
+            ..Default::default()
+        });
+        let after = sheet.skill_check(&Skill::Insight);
+        assert_eq!(
+            after,
+            before + sheet.skills.proficiency_bonus as i64,
+            "proficient"
+        );
+        // Lossless removal.
+        sheet.background = None;
+        assert_eq!(sheet.skill_check(&Skill::Insight), before);
     }
 
     #[test]
