@@ -80,3 +80,47 @@ impl AbilityScore {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_modifier_matches_srd_formula() {
+        // SRD: modifier = (score - 10) / 2, rounded down, for scores 1..=30.
+        for score in 1..=30 {
+            let a = AbilityScore { base: score, bonus: 0 };
+            assert_eq!(a.modifier(), (score - 10).div_euclid(2), "score {score}");
+        }
+    }
+
+    #[test]
+    fn test_bonus_math() {
+        let mut a = AbilityScore::new(8, 2);
+        assert_eq!(a.get(), 10);
+        assert_eq!(a.modifier(), 0);
+        a.add_bonus(2);
+        assert_eq!(a.get(), 12);
+        assert_eq!(a.modifier(), 1);
+        // set_bonus REPLACES the bonus, it does not add to it.
+        a.set_bonus(-2);
+        assert_eq!(a.get(), 6);
+        assert_eq!(a.modifier(), -2);
+        a.reset();
+        assert_eq!(a.get_bonus(), 0);
+        assert_eq!(a.get(), 8);
+    }
+
+    #[test]
+    fn test_new_clamps_base_to_one() {
+        assert_eq!(AbilityScore::new(0, 0).get(), 1);
+        assert_eq!(AbilityScore::new(-5, 0).get(), 1);
+    }
+
+    #[test]
+    fn test_out_of_range_score_falls_back_to_zero() {
+        // Current documented fallback: scores outside 1..=30 warn and return 0.
+        let a = AbilityScore { base: 31, bonus: 0 };
+        assert_eq!(a.modifier(), 0);
+    }
+}

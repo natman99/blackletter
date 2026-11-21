@@ -10,7 +10,10 @@ use rhai::CustomType;
 
 use strum::{Display, EnumString};
 
-use crate::{AbilityScores, Score};
+use crate::{
+    AbilityScores,
+    sheet::skills::{Skill, Skills},
+};
 
 #[derive(Debug, Clone, PartialEq, Copy)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -30,16 +33,19 @@ impl Senses {
         Self::default()
     }
 
-    pub fn get_perception(&self, scores: &AbilityScores) -> i64 {
-        scores.get(&Score::Wis).modifier() + self.perception_bonus
+    /// Passive Wisdom (Perception) score: 10 + check total (SRD passive checks).
+    pub fn get_perception(&self, scores: &AbilityScores, skills: &Skills) -> i64 {
+        10 + skills.check(&Skill::Perception, scores) + self.perception_bonus
     }
 
-    pub fn get_insight(&self, scores: &AbilityScores) -> i64 {
-        scores.get(&Score::Wis).modifier() + self.insight_bonus
+    /// Passive Wisdom (Insight) score: 10 + check total (SRD passive checks).
+    pub fn get_insight(&self, scores: &AbilityScores, skills: &Skills) -> i64 {
+        10 + skills.check(&Skill::Insight, scores) + self.insight_bonus
     }
 
-    pub fn get_investigation(&self, scores: &AbilityScores) -> i64 {
-        scores.get(&Score::Int).modifier() + self.investigation_bonus
+    /// Passive Intelligence (Investigation) score: 10 + check total.
+    pub fn get_investigation(&self, scores: &AbilityScores, skills: &Skills) -> i64 {
+        10 + skills.check(&Skill::Investigation, scores) + self.investigation_bonus
     }
 }
 

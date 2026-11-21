@@ -188,8 +188,15 @@ struct SkillsJson {
     intimidation: bool,
     performance: bool,
     persuasion: bool,
+    #[cfg_attr(feature = "serde", serde(default = "default_proficiency_bonus"))]
     proficiency_bonus: i64,
     expertise: Vec<Skill>,
+    overrides: Overrides,
+}
+
+/// SRD PHB Character Advancement: proficiency bonus starts at +2.
+const fn default_proficiency_bonus() -> i64 {
+    2
 }
 #[derive(Debug, Clone, PartialEq, Default, Copy)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -260,7 +267,7 @@ pub struct Skills {
 impl Default for Skills {
     fn default() -> Self {
         Self {
-            proficiency_bonus: 1,
+            proficiency_bonus: 2,
             proficiencies: Default::default(),
             expertise: Default::default(),
             overrides: Default::default(),
@@ -294,6 +301,7 @@ impl From<SkillsJson> for Skills {
         out.proficiencies.set(Skill::Performance, value.performance);
         out.proficiencies.set(Skill::Persuasion, value.persuasion);
         out.proficiency_bonus = value.proficiency_bonus;
+        out.overrides = value.overrides;
         out.expertise = {
             let mut m: BitFlags<Skill> = BitFlags::empty();
             value.expertise.iter().for_each(|f| m.set(*f, true));
@@ -307,6 +315,7 @@ impl From<&Skills> for SkillsJson {
     fn from(value: &Skills) -> Self {
         let mut out = SkillsJson::default();
         out.proficiency_bonus = value.proficiency_bonus;
+        out.overrides = value.overrides;
         value.proficiencies.iter().for_each(|f| match f {
             Skill::Athletics => out.athletics = true,
             Skill::Acrobatics => out.acrobatics = true,
@@ -388,5 +397,57 @@ impl Skills {
 
         
         base_modifier + bonus
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_proficiency_bonus_is_two() {
+        // SRD PHB Character Advancement table: level 1 proficiency bonus is +2.
+        assert_eq!(Skills::default().proficiency_bonus, 2);
+    }
+
+    #[test]
+    fn test_check_proficiency_and_expertise() {
+        let scores = AbilityScores::default(); // all 10 -> +0 modifiers
+        let mut skills = Skills::default();
+        assert_eq!(skills.check(&Skill::Athletics, &scores), 0);
+        skills.proficiencies.set(Skill::Athletics, true);
+        assert_eq!(skills.check(&Skill::Athletics, &scores), 2);
+        skills.expertise.set(Skill::Athletics, true);
+        assert_eq!(skills.check(&Skill::Athletics, &scores), 4);
+    }
+
+    #[test]
+    fn test_check_override_uses_other_ability() {
+        let mut scores = AbilityScores::default();
+        scores.cha.base = 16; // +3
+        let mut skills = Skills::default();
+        skills.overrides.acrobatics = Some(Score::Cha);
+        assert_eq!(skills.check(&Skill::Acrobatics, &scores), 3);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_serde_roundtrip_preserves_overrides() {
+        let mut skills = Skills::default();
+        skills.proficiency_bonus = 4;
+        skills.proficiencies.set(Skill::Perception, true);
+        skills.expertise.set(Skill::Perception, true);
+        skills.overrides.perception = Some(Score::Int);
+
+        let json = serde_json::to_string(&skills).unwrap();
+        let back: Skills = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, skills);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn test_missing_proficiency_bonus_defaults_to_two() {
+        let back: Skills = serde_json::from_str("{}").unwrap();
+        assert_eq!(back.proficiency_bonus, 2);
     }
 }

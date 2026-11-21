@@ -24,6 +24,26 @@ pub struct Classes {
 }
 
 impl Classes {
+    /// Total character level across all classes. SRD: proficiency bonus and
+    /// cantrip scaling use total character level, not per-class level.
+    #[must_use]
+    pub fn total_level(&self) -> i64 {
+        self.classes.iter().map(|c| c.level.0).sum()
+    }
+
+    /// SRD PHB Character Advancement table: proficiency bonus by total
+    /// character level (levels 1-4: +2, 5-8: +3, 9-12: +4, 13-16: +5, 17-20: +6).
+    #[must_use]
+    pub fn proficiency_bonus(&self) -> i64 {
+        match self.total_level().clamp(1, 20) {
+            1..=4 => 2,
+            5..=8 => 3,
+            9..=12 => 4,
+            13..=16 => 5,
+            _ => 6,
+        }
+    }
+
     pub fn heal(
         &mut self,
         index: usize,
@@ -141,12 +161,15 @@ impl Class {
         if self.healing_die_remaining == 0 {
             return;
         }
-        if roll {
+        // SRD: spend a Hit Die; recover either a rolled amount or the
+        // average (die/2 + 1), plus the CON modifier either way.
+        let healing_amount = if roll {
             let mut rng = rand::rng();
-            let healing_amount =
-                rng.random_range(1..=self.hit_dice.max() as i64) + ability_scores.con.modifier();
-            health.heal(healing_amount);
-        }
+            rng.random_range(1..=self.hit_dice.max() as i64)
+        } else {
+            self.hit_dice.max() as i64 / 2 + 1
+        } + ability_scores.con.modifier();
+        health.heal(healing_amount.max(1));
         self.healing_die_remaining = self.healing_die_remaining.saturating_sub(1);
     }
 
@@ -306,10 +329,56 @@ impl Display for Level {
 mod tests {
     use std::str::FromStr;
 
-    use crate::class::ClassType;
+    use crate::{
+        AbilityScores, HitPoints,
+        class::{Class, ClassType, Classes, Level},
+    };
 
     #[test]
     fn from_other() {
         ClassType::from_str("test").unwrap();
+    }
+
+    #[test]
+    fn proficiency_bonus_matches_srd_table() {
+        // Wiki/03 beyond1st, Character Advancement table.
+        let expected = |level: i64| match level {
+            1..=4 => 2,
+            5..=8 => 3,
+            9..=12 => 4,
+            13..=16 => 5,
+            17..=20 => 6,
+            _ => unreachable!(),
+        };
+        for level in 1..=20 {
+            let classes = Classes {
+                classes: vec![Class::new(Level(level), "fighter")],
+            };
+            assert_eq!(classes.proficiency_bonus(), expected(level), "level {level}");
+        }
+        // Multiclass uses total level: fighter 3 / wizard 2 -> level 5 -> +3.
+        let classes = Classes {
+            classes: vec![
+                Class::new(Level(3), "fighter"),
+                Class::new(Level(2), "wizard"),
+            ],
+        };
+        assert_eq!(classes.proficiency_bonus(), 3);
+    }
+
+    #[test]
+    fn heal_average_method_adds_con() {
+        let mut scores = AbilityScores::default();
+        scores.con.base = 14; // +2
+        let mut c = Class::new(Level(1), "fighter");
+        let mut hp = HitPoints::new(20);
+        hp.hit(10);
+        // d10 average (5 + 1) + CON 2 = 8.
+        c.heal(false, &mut hp, &scores);
+        assert_eq!(hp.current, 18);
+        assert_eq!(c.healing_die_remaining, 0);
+        // Out of dice: no-op.
+        c.heal(false, &mut hp, &scores);
+        assert_eq!(hp.current, 18);
     }
 }

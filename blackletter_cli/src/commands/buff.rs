@@ -47,11 +47,7 @@ fn add(split: &mut Split<&str>, app: &mut App) -> command::Result<()> {
         return Err(command::CommandError::ArgumentError);
     };
 
-    let cond = Condition {
-        name: name.to_string(),
-        desc: String::new(),
-        duration: duration.unwrap_or(-1),
-    };
+    let cond = Condition::new(name.to_string(), duration.unwrap_or(-1));
 
     app.sheet.conditions.conditions.push(cond);
 
@@ -60,12 +56,16 @@ fn add(split: &mut Split<&str>, app: &mut App) -> command::Result<()> {
 
 fn remove(split: &mut Split<&str>, app: &mut App) -> command::Result<()> {
     if let Some(remove) = split.next() {
-        let data = app
+        let names = app
             .sheet
             .conditions
             .conditions
             .iter()
-            .map(|f| f.name.as_str())
+            .map(|f| f.kind.to_string())
+            .collect::<Vec<String>>();
+        let data = names
+            .iter()
+            .map(|f| f.as_str())
             .collect::<Vec<&str>>();
 
         if let filter = search::filter(remove, &data, 2)
