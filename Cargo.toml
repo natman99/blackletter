@@ -11,6 +11,11 @@ resolver = "3"
 [workspace.dependencies]
 anyhow = "1.0.102"
 blackletter_types = { path = "blackletter_types" }
+# Zed's gpui as shipped in Zed 1.25.3 (same pin as shale). crates.io's gpui 0.2.2
+# is an older tree whose Wayland backend stalls its frame/present loop; this tag
+# has the rewritten frame-loop in gpui_linux. Apache-2.0.
+gpui = { git = "https://github.com/zed-industries/zed", tag = "v1.25.3" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", tag = "v1.25.3", features = ["wayland", "x11", "font-kit"] }
 clap = { version = "4.6.1", features = ["derive"] }
 rhai = { version = "1.25.1" }
 rand = "0.10.0"
