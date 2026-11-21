@@ -5,7 +5,8 @@
 //! Mapping rules (from `Endara/Characters/Aldric Underwood.md`):
 //! - Ability scores are the note's FINAL values (19 Int already includes
 //!   the Keen Mind +1); the race/background carry no mechanical bonuses so
-//!   nothing double-counts. The note never states a race — left unset.
+//!   nothing double-counts. Race is Human (standard PHB: no bonuses),
+//!   confirmed by the user 2026-11-21.
 //! - The note's save bonuses (+5 CON / +7 CHA) are stale (PB +2 era);
 //!   the engine derives CON/CHA proficient at PB +3 instead.
 //! - Perception +6 in the note implies proficiency, but the note's own
@@ -66,6 +67,7 @@ fn main() {
         ClassType::Sorcerer,
         scores,
     );
+    c.race = Some(blackletter_types::race::Race::new("Human"));
     c.classes.classes[0].subclass = "Clockwork Soul".into();
     c.ability_modifier = Score::Cha;
 
