@@ -91,6 +91,13 @@ pub struct Character {
     /// Exhaustion level 0..=6 (SRD). Set directly for house rules; the
     /// effects are derived in `Modifiers::finish`.
     pub exhaustion: u8,
+    /// Set by `long_rest` for prepared casters: the day's prepared list is
+    /// spent and the UI should prompt "prepare spells" (SRD: a wizard
+    /// needs 1 minute of prayer after a long rest to prepare; a cleric
+    /// prepares after finishing a long rest). Plain bookkeeping — no
+    /// timer modeling. Cleared by `finish_spell_prep`.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub needs_spell_prep: bool,
     /// House-rules seam for spell slots: slot counts for spell levels
     /// 1..=9 (index 0 = 1st level). When set, replaces the derived table
     /// until cleared; Pact Magic is unaffected (edit its meter directly).
@@ -108,6 +115,7 @@ impl Character {
         let mut sheet = Self {
             name,
             health,
+            needs_spell_prep: false,
             classes: Classes {
                 classes: vec![Class {
                     level: Level(level),
@@ -797,6 +805,30 @@ impl Character {
 
     /// SRD short rest: meters that restore on a short rest refill.
     /// Hit dice spending is a separate player choice (`spend_hit_die`).
+    /// The casting mechanic of the character's (first) casting class, or
+    /// `None` for a non-caster. SRD "Known and Prepared Spells"
+    /// (`Wiki/08 spellcasting.md:23`).
+    #[must_use]
+    pub fn casting_mechanic(&self) -> Option<crate::sheet::class::CastingMechanic> {
+        self.classes
+            .classes
+            .iter()
+            .find_map(|c| c.class.casting_mechanic())
+    }
+
+    /// Flip a known spell's prepared flag. Returns the new value, or `None`
+    /// when the sheet doesn't have that spell.
+    pub fn toggle_prepared(&mut self, spell_name: &str) -> Option<bool> {
+        let spell = self.spells.spells.get_mut(spell_name)?;
+        spell.prepared = !spell.prepared;
+        Some(spell.prepared)
+    }
+
+    /// The "prepare spells" prompt is answered: the day's list is set.
+    pub fn finish_spell_prep(&mut self) {
+        self.needs_spell_prep = false;
+    }
+
     pub fn short_rest(&mut self) {
         for m in self.meters.meters.values_mut() {
             if m.restore.short_rest {
@@ -825,6 +857,16 @@ impl Character {
                 m.restore_all();
             }
         }
+
+        // SRD: finishing a long rest restores spell slots (:35); prepared
+        // casters must also choose a fresh list — flag it for the UI.
+        if matches!(
+            self.casting_mechanic(),
+            Some(crate::sheet::class::CastingMechanic::Prepared)
+                | Some(crate::sheet::class::CastingMechanic::PreparedWithSpellbook)
+        ) {
+            self.needs_spell_prep = true;
+        }
     }
 
     pub fn passive_senses(&self) -> PassiveSenses {
@@ -843,6 +885,7 @@ impl Default for Character {
         Self {
             name: "name".to_string(),
             race: Some(Race::new("Elf")),
+            needs_spell_prep: false,
             gold: 0,
             classes: Default::default(),
             initiative: Default::default(),
@@ -1195,6 +1238,95 @@ mod tests {
         sheet.classes[0].level = Level(17);
         sheet.sync_proficiency_bonus();
         assert_eq!(sheet.skills.proficiency_bonus, 6);
+    }
+
+    #[test]
+    fn casting_mechanic_per_class_srd() {
+        // SRD "Known and Prepared Spells" (Wiki/08 spellcasting.md:23-25).
+        use crate::sheet::class::CastingMechanic::*;
+        assert_eq!(ClassType::Cleric.casting_mechanic(), Some(Prepared));
+        assert_eq!(ClassType::Paladin.casting_mechanic(), Some(Prepared));
+        assert_eq!(ClassType::Ranger.casting_mechanic(), Some(Prepared));
+        assert_eq!(ClassType::Druid.casting_mechanic(), Some(Prepared));
+        assert_eq!(
+            ClassType::Wizard.casting_mechanic(),
+            Some(PreparedWithSpellbook)
+        );
+        assert_eq!(ClassType::Bard.casting_mechanic(), Some(Known));
+        assert_eq!(ClassType::Sorcerer.casting_mechanic(), Some(Known));
+        assert_eq!(ClassType::Warlock.casting_mechanic(), Some(Known));
+        assert_eq!(ClassType::Fighter.casting_mechanic(), None);
+        // Multiclass: the first casting class decides the UI mechanic.
+        let mut sheet = Character::default();
+        sheet.classes.classes[0].class = ClassType::Fighter;
+        sheet.classes.classes.push(Class {
+            class: ClassType::Cleric,
+            ..Default::default()
+        });
+        assert_eq!(
+            sheet.casting_mechanic(),
+            Some(crate::sheet::class::CastingMechanic::Prepared)
+        );
+    }
+
+    #[test]
+    fn long_rest_flags_prepared_casters_for_prep() {
+        // SRD: a long rest restores slots (:35) and prepared casters pick a
+        // fresh list; the flag drives the UI prompt, nothing else.
+        let mut cleric = Character::new(
+            "C".to_string(),
+            1,
+            HitPoints::new(8),
+            ClassType::Cleric,
+            AbilityScores::default(),
+        );
+        assert!(!cleric.needs_spell_prep);
+        cleric.long_rest();
+        assert!(cleric.needs_spell_prep);
+        cleric.finish_spell_prep();
+        assert!(!cleric.needs_spell_prep);
+
+        let mut fighter = Character::new(
+            "F".to_string(),
+            1,
+            HitPoints::new(10),
+            ClassType::Fighter,
+            AbilityScores::default(),
+        );
+        fighter.long_rest();
+        assert!(!fighter.needs_spell_prep, "non-casters get no prompt");
+    }
+
+    #[test]
+    fn prepared_flag_toggles() {
+        let mut sheet = Character::default();
+        let spell = crate::spells::Spell {
+            name: "Shield of Faith".to_string(),
+            ..Default::default()
+        };
+        sheet.spells.spells.insert(spell.name.clone(), spell);
+        assert_eq!(sheet.toggle_prepared("Shield of Faith"), Some(true));
+        assert!(sheet.spells.spells["Shield of Faith"].prepared);
+        assert_eq!(sheet.toggle_prepared("Shield of Faith"), Some(false));
+        assert_eq!(sheet.toggle_prepared("Not a Spell"), None);
+    }
+
+    /// A save written before `prepared` existed still loads (serde default).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn prepared_flag_survives_old_saves() {
+        let mut sheet = Character::default();
+        let spell = crate::spells::Spell {
+            name: "Shield of Faith".to_string(),
+            ..Default::default()
+        };
+        sheet.spells.spells.insert(spell.name.clone(), spell);
+        sheet.toggle_prepared("Shield of Faith");
+        let json = serde_json::to_string(&sheet).unwrap();
+        let stripped = json.replace("\"prepared\":true,", "");
+        assert_ne!(json, stripped, "the field was in the save to strip");
+        let back: Character = serde_json::from_str(&stripped).unwrap();
+        assert!(!back.spells.spells["Shield of Faith"].prepared);
     }
 
     #[test]

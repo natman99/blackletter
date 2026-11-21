@@ -230,7 +230,39 @@ pub enum ClassType {
     Other(String),
 }
 
+/// How a class keeps its spells in mind, per SRD 2014
+/// "Known and Prepared Spells" (`Wiki/08 spellcasting.md:23-25`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+pub enum CastingMechanic {
+    /// Cleric, paladin, ranger, druid, artificer: a prepared list chosen
+    /// each day after a long rest.
+    #[default]
+    Prepared,
+    /// Wizard: prepared, but from a spellbook — copying new spells into
+    /// the book is its own resource loop.
+    PreparedWithSpellbook,
+    /// Bard, sorcerer, warlock: a fixed list of spells known.
+    Known,
+}
+
 impl ClassType {
+    /// The SRD 2014 casting mechanic for this class, or `None` for classes
+    /// with no spellcasting (subclass features like the Eldritch Knight
+    /// are handled by granting the mechanic at the feature layer later).
+    #[must_use]
+    pub fn casting_mechanic(&self) -> Option<CastingMechanic> {
+        match self {
+            Self::Cleric | Self::Paladin | Self::Ranger | Self::Druid | Self::Artificer => {
+                Some(CastingMechanic::Prepared)
+            }
+            Self::Wizard => Some(CastingMechanic::PreparedWithSpellbook),
+            Self::Bard | Self::Sorcerer | Self::Warlock => Some(CastingMechanic::Known),
+            Self::Fighter | Self::Barbarian | Self::Monk | Self::Rogue | Self::Other(_) => None,
+        }
+    }
+
     /// How this class contributes to spellcaster level (SRD 2014).
     /// `Other(_)` defaults to no casting; grant it slots via
     /// `Character::spell_slots_override` or meters.

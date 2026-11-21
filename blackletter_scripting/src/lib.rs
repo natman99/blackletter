@@ -125,6 +125,7 @@ impl Interface {
             death_saves,
             exhaustion,
             spell_slots_override,
+            needs_spell_prep,
         } = Character::default();
 
         let armor_class = armor_class.flat;
@@ -164,6 +165,7 @@ impl Interface {
             Some(v) => scope.push("spell_slots_override", v),
             None => scope.push("spell_slots_override", ()),
         };
+        scope.push("needs_spell_prep", needs_spell_prep);
 
         // We should run automated additions including adding meters, abilities, calculating health, and applying item stats.
         scope.push("calculate", true);
@@ -212,6 +214,7 @@ impl Interface {
             death_saves,
             exhaustion,
             spell_slots_override,
+            needs_spell_prep,
         } = character;
 
         let armor_class = armor_class.flat;
@@ -258,6 +261,7 @@ impl Interface {
             Some(v) => scope.push("spell_slots_override", v),
             None => scope.push("spell_slots_override", ()),
         };
+        scope.push("needs_spell_prep", needs_spell_prep);
     }
 
     fn extract_scope(&self, scope: &mut Scope) -> anyhow::Result<Character> {
@@ -321,8 +325,10 @@ impl Interface {
         let exhaustion = exhaustion_raw as u8;
         let spell_slots_override =
             extract_opt!("spell_slots_override", "spell_slots_override", Vec<i64>)?;
+        let needs_spell_prep = extract!("needs_spell_prep", "needs_spell_prep")?;
 
         Ok(Character {
+            needs_spell_prep,
             name,
             race,
             gold,

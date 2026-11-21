@@ -64,6 +64,12 @@ pub struct Spell {
     pub ritual: bool,
     /// The spell's level
     pub level: i64,
+    /// Whether this spell is prepared right now. Meaningful only for
+    /// prepared casters (`Character::casting_mechanic`); SRD
+    /// "Known and Prepared Spells" (`Wiki/08 spellcasting.md:23`).
+    /// `serde(default)` keeps pre-existing saves loadable.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub prepared: bool,
     /// The type of the spell.
     pub spell_type: SpellType,
     /// The effect of the spell.
@@ -339,6 +345,7 @@ impl Spell {
             .collect();
 
         let s = Self {
+            prepared: false,
             name: value.name,
             desc: value.desc.join("\n"),
             range: value.range,

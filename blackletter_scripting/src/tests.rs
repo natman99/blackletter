@@ -15,6 +15,16 @@ use blackletter_types::{
 
 use super::Interface;
 #[test]
+fn needs_spell_prep_round_trips_through_the_scope() {
+    let mut i = Interface::new();
+    let script = r#"
+        needs_spell_prep = true
+        "#;
+    let c = i.execute(script, None).unwrap();
+    assert!(c.needs_spell_prep);
+}
+
+#[test]
 fn name() {
     let mut i = Interface::new();
     let script = r#"
@@ -87,6 +97,7 @@ fn spell() {
     let c = i.execute(script, None).unwrap();
     let spell = c.spells.spells.get("Magic Missile").unwrap();
     let s = Spell {
+        prepared: false,
         name: "Magic Missile".to_string(),
         desc: "Goes boom".to_string(),
         range: "12 toes".to_string(),
