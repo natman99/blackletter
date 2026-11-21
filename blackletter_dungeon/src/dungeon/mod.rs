@@ -174,9 +174,10 @@ impl Dungeon {
             connection: conn,
             name: None,
             notes: String::new(),
-            locked: false,
+            lock: None,
             trapped: false,
             secret: false,
+            open: false,
         });
     }
 

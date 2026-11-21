@@ -132,6 +132,34 @@ mod tests {
     }
 
     #[test]
+    fn legacy_locked_doors_migrate_to_srd_lock() {
+        use crate::model::{Door, Lock};
+        let legacy = r#"{
+            "id": 0, "from": 0, "target": 1,
+            "connection": {"Horizontal": "E"},
+            "name": null, "notes": "",
+            "locked": true, "trapped": false, "secret": false
+        }"#;
+        let door: Door = serde_json::from_str(legacy).unwrap();
+        assert_eq!(door.lock, Some(Lock::SRD));
+        assert!(!door.open);
+
+        let unlocked = legacy.replace("\"locked\": true", "\"locked\": false");
+        let door: Door = serde_json::from_str(&unlocked).unwrap();
+        assert_eq!(door.lock, None);
+
+        // New-format round-trip preserves lock and open.
+        let door2 = Door {
+            lock: Some(Lock::HARD),
+            open: true,
+            ..door
+        };
+        let json = serde_json::to_string(&door2).unwrap();
+        let back: Door = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, door2);
+    }
+
+    #[test]
     fn list_saves_reports_names() {
         let dir = std::env::temp_dir().join("dungeon_tracker_test_list");
         let _ = fs::remove_dir_all(&dir);

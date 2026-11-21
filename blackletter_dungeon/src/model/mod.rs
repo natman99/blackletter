@@ -97,7 +97,8 @@ impl Room {
 }
 
 /// A connection between two rooms. Doors are stored in pairs (one per side).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(from = "DoorShadow")]
 pub struct Door {
     pub id: DoorId,
     pub from: RoomId,
@@ -105,10 +106,70 @@ pub struct Door {
     pub connection: Connection,
     pub name: Option<String>,
     pub notes: String,
-    pub locked: bool,
+    /// `None` = unlocked. The SRD has exactly ONE lock DC — DC 15 Dexterity
+    /// with thieves' tools (`Wiki/04 equipment.md:316`); there is no SRD
+    /// easy/medium/hard table (that's DMG), so the presets below are the SRD
+    /// default and one hand-picked harder value, and the DC is free-editable.
+    pub lock: Option<Lock>,
     pub trapped: bool,
     /// A secret / hidden door.
     pub secret: bool,
+    /// Currently open (serde default: closed).
+    pub open: bool,
+}
+
+/// A lock's pick DC.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Lock {
+    pub dc: i64,
+}
+
+impl Lock {
+    /// The SRD lock: DC 15 Dex (thieves' tools), `Wiki/04 equipment.md:316`.
+    pub const SRD: Lock = Lock { dc: 15 };
+    /// A hand-picked "better lock" for the `L` cycle.
+    pub const HARD: Lock = Lock { dc: 25 };
+}
+
+/// Deserialization shadow so pre-upgrade saves (`locked: bool`, no `open`)
+/// keep loading: `locked: true` migrates to the SRD lock.
+#[derive(serde::Deserialize)]
+struct DoorShadow {
+    id: DoorId,
+    from: RoomId,
+    target: RoomId,
+    connection: Connection,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    notes: String,
+    #[serde(default)]
+    lock: Option<Lock>,
+    #[serde(default)]
+    locked: Option<bool>,
+    #[serde(default)]
+    trapped: bool,
+    #[serde(default)]
+    secret: bool,
+    #[serde(default)]
+    open: bool,
+}
+
+impl From<DoorShadow> for Door {
+    fn from(s: DoorShadow) -> Self {
+        Self {
+            id: s.id,
+            from: s.from,
+            target: s.target,
+            connection: s.connection,
+            name: s.name,
+            notes: s.notes,
+            lock: s.lock.or(s.locked.unwrap_or(false).then_some(Lock::SRD)),
+            trapped: s.trapped,
+            secret: s.secret,
+            open: s.open,
+        }
+    }
 }
 
 /// The whole dungeon.
