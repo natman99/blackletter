@@ -91,6 +91,12 @@ pub struct Character {
     /// Exhaustion level 0..=6 (SRD). Set directly for house rules; the
     /// effects are derived in `Modifiers::finish`.
     pub exhaustion: u8,
+    /// The spell currently being concentrated on, if any. SRD
+    /// "Concentration" (`Wiki/08 spellcasting.md:120-129`): casting
+    /// another concentration spell breaks the old; damage forces a CON
+    /// save vs DC 10 or half the damage (min 10).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub concentrating: Option<Concentration>,
     /// Set by `long_rest` for prepared casters: the day's prepared list is
     /// spent and the UI should prompt "prepare spells" (SRD: a wizard
     /// needs 1 minute of prayer after a long rest to prepare; a cleric
@@ -116,6 +122,7 @@ impl Character {
             name,
             health,
             needs_spell_prep: false,
+            concentrating: None,
             classes: Classes {
                 classes: vec![Class {
                     level: Level(level),
@@ -824,6 +831,53 @@ impl Character {
         Some(spell.prepared)
     }
 
+    /// Begin concentrating on a spell. SRD: "You can't concentrate on
+    /// two spells at once" — the previous concentration breaks, and its
+    /// name is returned so the UI can say so (`save_dc` is the caster's
+    /// spell save DC, kept for display).
+    pub fn start_concentration(
+        &mut self,
+        spell_name: impl Into<String>,
+        save_dc: i64,
+    ) -> Option<String> {
+        let previous = self.concentrating.replace(Concentration {
+            spell_name: spell_name.into(),
+            save_dc,
+        });
+        previous.map(|c| c.spell_name)
+    }
+
+    /// End concentration voluntarily (SRD: "You can end concentration at
+    /// any time (no action required)").
+    pub fn end_concentration(&mut self) -> Option<Concentration> {
+        self.concentrating.take()
+    }
+
+    /// Taking damage while concentrating forces a CON save: DC is 10 or
+    /// half the damage, whichever is higher (SRD `Wiki/08
+    /// spellcasting.md:128`). Returns `None` when nothing is being
+    /// concentrated on; on a failed save the concentration is cleared
+    /// and `broken` reports it.
+    pub fn concentration_save(
+        &mut self,
+        rng: &mut impl rand::Rng,
+        damage: i64,
+    ) -> Option<ConcentrationSave> {
+        let dc = 10.max(damage / 2);
+        let outcome = self.roll_save(rng, Score::Con, crate::sheet::roll::Advantage::Normal);
+        let broken = outcome.result.total < dc;
+        let spell_name = self.concentrating.as_ref()?.spell_name.clone();
+        if broken {
+            self.concentrating = None;
+        }
+        Some(ConcentrationSave {
+            spell_name,
+            dc,
+            outcome,
+            broken,
+        })
+    }
+
     /// The "prepare spells" prompt is answered: the day's list is set.
     pub fn finish_spell_prep(&mut self) {
         self.needs_spell_prep = false;
@@ -886,6 +940,7 @@ impl Default for Character {
             name: "name".to_string(),
             race: Some(Race::new("Elf")),
             needs_spell_prep: false,
+            concentrating: None,
             gold: 0,
             classes: Default::default(),
             initiative: Default::default(),
@@ -918,6 +973,28 @@ pub struct PassiveSenses {
     pub insight: i64,
     pub perception: i64,
     pub investigation: i64,
+}
+
+/// A spell being concentrated on: the name plus the caster's spell save
+/// DC at cast time, for display.
+#[derive(Debug, Clone, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+#[cfg_attr(feature = "rhai", derive(CustomType))]
+pub struct Concentration {
+    pub spell_name: String,
+    pub save_dc: i64,
+}
+
+/// The result of the CON save forced by damage while concentrating.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConcentrationSave {
+    pub spell_name: String,
+    /// The DC that was set: `max(10, damage / 2)`.
+    pub dc: i64,
+    pub outcome: RollOutcome,
+    /// The save failed: concentration ended.
+    pub broken: bool,
 }
 
 /// A d20 roll resolved against the sheet: the dice, the modifier that was
@@ -1295,6 +1372,41 @@ mod tests {
         );
         fighter.long_rest();
         assert!(!fighter.needs_spell_prep, "non-casters get no prompt");
+    }
+
+    #[test]
+    fn concentration_rules_srd_2014() {
+        // Wiki/08 spellcasting.md:120-129.
+        use rand::SeedableRng;
+        let mut sheet = Character::default();
+        sheet.ability_scores.con.base = 20;
+
+        // One concentration at a time: the old one breaks and is reported.
+        assert_eq!(sheet.start_concentration("Haste", 13), None);
+        assert_eq!(
+            sheet.start_concentration("Fly", 13),
+            Some("Haste".to_string())
+        );
+        assert_eq!(sheet.concentrating.as_ref().unwrap().spell_name, "Fly");
+
+        // DC is 10 or half the damage, whichever is higher.
+        let mut rng = rand::rngs::StdRng::seed_from_u64(7);
+        let light = sheet.concentration_save(&mut rng, 5).unwrap();
+        assert_eq!(light.dc, 10, "half of 5 is below the floor");
+        let heavy = sheet.concentration_save(&mut rng, 30).unwrap();
+        assert_eq!(heavy.dc, 15, "half of 30 beats the floor");
+
+        // State agrees with the roll either way.
+        assert_eq!(heavy.broken, heavy.outcome.result.total < 15);
+        assert_eq!(
+            sheet.concentrating.is_none(),
+            heavy.broken,
+            "a failed save ends it, a saved one keeps it",
+        );
+
+        // Voluntary end, and no save when nothing is up.
+        assert!(sheet.end_concentration().is_some() || heavy.broken);
+        assert!(sheet.concentration_save(&mut rng, 10).is_none());
     }
 
     #[test]

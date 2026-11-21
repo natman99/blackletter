@@ -4,7 +4,8 @@ use std::{
 };
 
 use blackletter_types::{
-    AbilityScores, ArmorClass, Character, HitPoints, Initiative, Inventory, WalkingSpeed,
+    AbilityScores, ArmorClass, Character, Concentration, HitPoints, Initiative, Inventory,
+    WalkingSpeed,
     ability_score::AbilityScore,
     class::{Class, Classes},
     condition::Conditions,
@@ -126,6 +127,7 @@ impl Interface {
             exhaustion,
             spell_slots_override,
             needs_spell_prep,
+            concentrating,
         } = Character::default();
 
         let armor_class = armor_class.flat;
@@ -166,6 +168,10 @@ impl Interface {
             None => scope.push("spell_slots_override", ()),
         };
         scope.push("needs_spell_prep", needs_spell_prep);
+        match concentrating {
+            Some(c) => scope.push("concentrating", c),
+            None => scope.push("concentrating", ()),
+        };
 
         // We should run automated additions including adding meters, abilities, calculating health, and applying item stats.
         scope.push("calculate", true);
@@ -215,6 +221,7 @@ impl Interface {
             exhaustion,
             spell_slots_override,
             needs_spell_prep,
+            concentrating,
         } = character;
 
         let armor_class = armor_class.flat;
@@ -262,6 +269,10 @@ impl Interface {
             None => scope.push("spell_slots_override", ()),
         };
         scope.push("needs_spell_prep", needs_spell_prep);
+        match concentrating {
+            Some(c) => scope.push("concentrating", c),
+            None => scope.push("concentrating", ()),
+        };
     }
 
     fn extract_scope(&self, scope: &mut Scope) -> anyhow::Result<Character> {
@@ -326,8 +337,10 @@ impl Interface {
         let spell_slots_override =
             extract_opt!("spell_slots_override", "spell_slots_override", Vec<i64>)?;
         let needs_spell_prep = extract!("needs_spell_prep", "needs_spell_prep")?;
+        let concentrating = extract_opt!("concentrating", "concentrating", Concentration)?;
 
         Ok(Character {
+            concentrating,
             needs_spell_prep,
             name,
             race,
