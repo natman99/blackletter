@@ -378,6 +378,93 @@ impl Character {
         self.conditions.conditions.retain(|c| c.duration != 0);
     }
 
+    // ---- d20 rolls resolved against the sheet ----
+
+    /// Roll a d20 with `bonus`, applying the resolved advantage state.
+    fn roll_d20(
+        &self,
+        rng: &mut impl rand::Rng,
+        bonus: i64,
+        advantage: crate::sheet::roll::Advantage,
+    ) -> crate::sheet::roll::RollResult {
+        crate::sheet::roll::Roll::new(&[crate::sheet::roll::Die::D20], bonus as i32)
+            .roll(rng, advantage.to_modifier())
+    }
+
+    /// Ability check: granted bonuses folded in, condition disadvantage
+    /// resolved, combined with any situational `extra` advantage.
+    #[must_use]
+    pub fn roll_check(
+        &self,
+        rng: &mut impl rand::Rng,
+        skill: &Skill,
+        extra: crate::sheet::roll::Advantage,
+    ) -> RollOutcome {
+        let m = self.modifiers();
+        let advantage = m.check_advantage().combine(extra);
+        let bonus = self.skill_check(skill);
+        let result = self.roll_d20(rng, bonus, advantage);
+        RollOutcome {
+            result,
+            bonus,
+            advantage,
+            auto_failed: false,
+        }
+    }
+
+    /// Saving throw: condition auto-fails (Stunned et al.) and condition
+    /// disadvantage (Restrained: Dex) are resolved here. Per the SRD an
+    /// auto-fail needs no roll; the die is rolled anyway for transparency
+    /// and `auto_failed` marks the outcome.
+    #[must_use]
+    pub fn roll_save(
+        &self,
+        rng: &mut impl rand::Rng,
+        score: Score,
+        extra: crate::sheet::roll::Advantage,
+    ) -> RollOutcome {
+        let m = self.modifiers();
+        let advantage = m.save_advantage(score).combine(extra);
+        let bonus = self.save_total(&score);
+        let auto_failed = m.auto_fails_save(score);
+        let result = self.roll_d20(rng, bonus, advantage);
+        RollOutcome {
+            result,
+            bonus,
+            advantage,
+            auto_failed,
+        }
+    }
+
+    /// Attack roll with the granted attack bonus. Crit detection:
+    /// `result.is_critical_hit()` (natural 20), or any hit counts as a
+    /// crit when the defender `auto_critical_against()` and the attacker
+    /// is within 5 feet — the caller owns that context.
+    #[must_use]
+    pub fn roll_attack(
+        &self,
+        rng: &mut impl rand::Rng,
+        extra: crate::sheet::roll::Advantage,
+    ) -> RollOutcome {
+        let m = self.modifiers();
+        let advantage = m.attack_advantage().combine(extra);
+        let bonus = self.attack_bonus() as i64;
+        let result = self.roll_d20(rng, bonus, advantage);
+        RollOutcome {
+            result,
+            bonus,
+            advantage,
+            auto_failed: false,
+        }
+    }
+
+    /// True while melee attacks that hit this sheet within 5 feet are
+    /// automatic critical hits (Paralyzed, Unconscious — SRD).
+    #[must_use]
+    pub fn auto_critical_against(&self) -> bool {
+        self.modifiers().melee_auto_critical
+    }
+
     /// Refresh `skills.proficiency_bonus` from the SRD table for the
     /// character's total level. Call after any level change; a manually
     /// set value is treated as a house-rules override until the next sync.
@@ -468,6 +555,21 @@ pub struct PassiveSenses {
     pub insight: i64,
     pub perception: i64,
     pub investigation: i64,
+}
+
+/// A d20 roll resolved against the sheet: the dice, the modifier that was
+/// added, the resolved advantage state, and whether a condition forced a
+/// failure regardless of the die.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RollOutcome {
+    pub result: crate::sheet::roll::RollResult,
+    /// Total modifier added to the d20 (from sheet + grants).
+    pub bonus: i64,
+    /// Resolved advantage (conditions combined with situational input).
+    pub advantage: crate::sheet::roll::Advantage,
+    /// A condition auto-failed this roll (SRD: no roll needed; the die is
+    /// rolled anyway for transparency).
+    pub auto_failed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -1044,5 +1146,85 @@ mod tests {
         assert!(sheet.remove_grant("Swift"));
         assert_eq!(sheet.speed_total(), base_speed);
         assert_eq!(sheet.save_total(&Score::Str), base_save);
+    }
+
+    // ---- rolls consume the grant/condition system ----
+
+    #[test]
+    fn test_roll_save_auto_fail_and_disadvantage() {
+        use crate::sheet::roll::Advantage;
+        let mut sheet = Character::default();
+        let mut rng = rand::rng();
+
+        // Stunned: Str and Dex saves auto-fail (SRD).
+        sheet.add_condition(Condition::new("Stunned", 2));
+        let out = sheet.roll_save(&mut rng, Score::Dex, Advantage::Normal);
+        assert!(out.auto_failed);
+        // Stunned auto-fails but adds no disadvantage die.
+        assert!(out.result.failures.is_empty());
+
+        // Restrained: disadvantage on Dex saves only.
+        sheet.remove_grant("stunned");
+        sheet.add_condition(Condition::new("Restrained", 2));
+        let out = sheet.roll_save(&mut rng, Score::Dex, Advantage::Normal);
+        assert_eq!(out.advantage, Advantage::Disadvantage);
+        assert!(!out.auto_failed);
+        assert_eq!(out.result.failures.len(), 1);
+        let out = sheet.roll_save(&mut rng, Score::Wis, Advantage::Normal);
+        assert_eq!(out.advantage, Advantage::Normal);
+    }
+
+    #[test]
+    fn test_roll_attack_advantage_cancels() {
+        use crate::sheet::roll::Advantage;
+        let mut sheet = Character::default();
+        let mut rng = rand::rng();
+
+        // Poisoned: disadvantage on the sheet's attack rolls.
+        sheet.add_condition(Condition::new("Poisoned", 2));
+        let out = sheet.roll_attack(&mut rng, Advantage::Normal);
+        assert_eq!(out.advantage, Advantage::Disadvantage);
+        assert_eq!(out.result.failures.len(), 1);
+
+        // Invisible grants own-attack advantage: cancels Poisoned.
+        sheet.add_condition(Condition::new("Invisible", 2));
+        let out = sheet.roll_attack(&mut rng, Advantage::Normal);
+        assert_eq!(out.advantage, Advantage::Normal);
+        assert!(out.result.failures.is_empty());
+
+        // Remove the disadvantage: advantage shows through.
+        sheet.remove_grant("poisoned");
+        let out = sheet.roll_attack(&mut rng, Advantage::Normal);
+        assert_eq!(out.advantage, Advantage::Advantage);
+    }
+
+    #[test]
+    fn test_roll_check_uses_granted_bonuses() {
+        use crate::feature::{Effect, Feature};
+        use crate::sheet::roll::Advantage;
+        let mut sheet = Character::default();
+        sheet.add_feature(Feature {
+            name: "Expert".to_string(),
+            source: None,
+            effects: vec![
+                Effect::AddProficiency(skills::Skill::Perception),
+                Effect::Expertise(skills::Skill::Perception),
+            ],
+        });
+        let mut rng = rand::rng();
+        let out = sheet.roll_check(&mut rng, &skills::Skill::Perception, Advantage::Normal);
+        assert_eq!(out.bonus, 4); // PB +2 doubled by expertise
+        let nat = out.result.natural.expect("d20 natural exposed");
+        assert_eq!(out.result.total, nat + 4);
+    }
+
+    #[test]
+    fn test_auto_critical_against() {
+        let mut sheet = Character::default();
+        assert!(!sheet.auto_critical_against());
+        sheet.add_condition(Condition::new("Unconscious", -1));
+        assert!(sheet.auto_critical_against());
+        sheet.remove_grant("unconscious");
+        assert!(!sheet.auto_critical_against());
     }
 }

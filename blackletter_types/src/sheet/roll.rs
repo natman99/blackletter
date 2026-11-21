@@ -18,9 +18,52 @@ pub trait Rollable {
     fn roll(&self, rng: &mut impl rand::Rng, special: Option<RollModifier>) -> Option<RollResult>;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RollModifier {
     Advantage,
     Disadvantage,
+}
+
+/// SRD advantage/disadvantage state. Per the SRD these CANCEL each other
+/// out and never stack: extra sources of the same side change nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[cfg_attr(feature = "schema", derive(JsonSchema))]
+pub enum Advantage {
+    #[default]
+    Normal,
+    Advantage,
+    Disadvantage,
+}
+
+impl Advantage {
+    /// Resolve raw flags: both true cancels to Normal.
+    #[must_use]
+    pub fn resolve(advantage: bool, disadvantage: bool) -> Self {
+        match (advantage, disadvantage) {
+            (true, false) => Self::Advantage,
+            (false, true) => Self::Disadvantage,
+            _ => Self::Normal,
+        }
+    }
+
+    /// Combine two sources (SRD: cancel, don't stack).
+    #[must_use]
+    pub fn combine(self, other: Self) -> Self {
+        Self::resolve(
+            self == Self::Advantage || other == Self::Advantage,
+            self == Self::Disadvantage || other == Self::Disadvantage,
+        )
+    }
+
+    #[must_use]
+    pub fn to_modifier(self) -> Option<RollModifier> {
+        match self {
+            Self::Normal => None,
+            Self::Advantage => Some(RollModifier::Advantage),
+            Self::Disadvantage => Some(RollModifier::Disadvantage),
+        }
+    }
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -78,7 +121,7 @@ impl Default for Roll {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RollResult {
     /// The total dice results added up.
     pub total: i64,
@@ -88,6 +131,24 @@ pub struct RollResult {
     pub results: Vec<i32>,
     /// The dice that weren't counted due to advantage/disadvantage
     pub failures: Vec<i32>,
+    /// The face value of the (first) d20 before bonuses — the natural die.
+    /// `None` for rolls with no d20. With advantage/disadvantage this is
+    /// the die that was chosen.
+    pub natural: Option<i64>,
+}
+
+impl RollResult {
+    /// Natural 20 on the d20 (caller decides whether crits apply).
+    #[must_use]
+    pub fn is_critical_hit(&self) -> bool {
+        self.natural == Some(20)
+    }
+
+    /// Natural 1 on the d20.
+    #[must_use]
+    pub fn is_critical_miss(&self) -> bool {
+        self.natural == Some(1)
+    }
 }
 
 impl Roll {
@@ -102,11 +163,16 @@ impl Roll {
         let mut total = 0i32;
         let mut results = vec![];
         let mut failures = vec![];
+        let mut natural = None;
 
         for i in &self.dice {
             let r = i.roll(rng);
 
-            if let Some(s) = &special {
+            // SRD: advantage/disadvantage applies to the d20 (attack,
+            // save, check), never to damage or other dice.
+            if let Some(s) = &special
+                && *i == Die::D20
+            {
                 let other = i.roll(rng);
 
                 let (success, failure) = {
@@ -131,9 +197,15 @@ impl Roll {
                 total += success;
                 results.push(success);
                 failures.push(failure);
+                if natural.is_none() {
+                    natural = Some(success.into());
+                }
             } else {
                 total += r;
                 results.push(r);
+                if natural.is_none() && *i == Die::D20 {
+                    natural = Some(r.into());
+                }
             }
         }
 
@@ -144,6 +216,7 @@ impl Roll {
             num_dice_rolled: results.len() as i32,
             results,
             failures,
+            natural,
         }
     }
 
@@ -331,6 +404,52 @@ mod tests {
         let roll = Roll::from_str("1d100").unwrap();
         assert_eq!(roll.dice, vec![Die::Percentile]);
         assert_eq!(roll.to_string(), "1d100 ");
+    }
+
+    #[test]
+    fn advantage_cancels_and_does_not_stack() {
+        assert_eq!(Advantage::resolve(true, true), Advantage::Normal);
+        assert_eq!(Advantage::resolve(true, false), Advantage::Advantage);
+        assert_eq!(Advantage::resolve(false, true), Advantage::Disadvantage);
+        assert_eq!(
+            Advantage::Advantage.combine(Advantage::Disadvantage),
+            Advantage::Normal
+        );
+        assert_eq!(
+            Advantage::Advantage.combine(Advantage::Advantage),
+            Advantage::Advantage
+        );
+    }
+
+    #[test]
+    fn advantage_only_affects_d20() {
+        // SRD: advantage applies to the d20, never to damage dice.
+        let roll = Roll::from_str("2d6").unwrap();
+        let r = roll.roll(&mut rand::rng(), Some(RollModifier::Advantage));
+        assert_eq!(r.results.len(), 2);
+        assert!(r.failures.is_empty());
+        assert_eq!(r.natural, None);
+    }
+
+    #[test]
+    fn natural_d20_exposed() {
+        let roll = Roll::from_str("1d20 + 5").unwrap();
+        let r = roll.roll(&mut rand::rng(), None);
+        let nat = r.natural.expect("d20 roll has a natural");
+        assert!((1..=20).contains(&nat));
+        assert_eq!(r.total, nat + 5);
+        assert_eq!(r.is_critical_hit(), nat == 20);
+        assert_eq!(r.is_critical_miss(), nat == 1);
+    }
+
+    #[test]
+    fn natural_is_the_chosen_die_with_advantage() {
+        let roll = Roll::from_str("1d20").unwrap();
+        let r = roll.roll(&mut rand::rng(), Some(RollModifier::Advantage));
+        assert_eq!(r.failures.len(), 1);
+        let nat = r.natural.expect("advantaged d20 roll has a natural");
+        assert_eq!(nat, r.results[0] as i64);
+        assert!(nat >= r.failures[0] as i64);
     }
 }
 

@@ -121,6 +121,7 @@ pub struct Modifiers {
     pub cant_take_actions: bool,
     pub speed_zero: bool,
     pub melee_auto_critical: bool,
+    pub own_attack_advantage: bool,
 }
 
 impl Modifiers {
@@ -174,6 +175,7 @@ impl Modifiers {
             self.cant_take_actions |= kind.cant_take_actions();
             self.speed_zero |= kind.speed_zero();
             self.melee_auto_critical |= kind.melee_hits_are_auto_critical();
+            self.own_attack_advantage |= kind.own_attacks_have_advantage();
             for &score in kind.auto_fail_saves() {
                 if !self.auto_fail_saves.contains(&score) {
                     self.auto_fail_saves.push(score);
@@ -228,5 +230,37 @@ impl Modifiers {
 
     pub fn auto_fails_save(&self, score: Score) -> bool {
         self.auto_fail_saves.contains(&score)
+    }
+
+    /// Advantage state for this sheet's own attack rolls.
+    #[must_use]
+    pub fn attack_advantage(&self) -> crate::sheet::roll::Advantage {
+        crate::sheet::roll::Advantage::resolve(self.own_attack_advantage, self.attack_disadvantage)
+    }
+
+    /// Advantage state for attack rolls made *against* this sheet.
+    #[must_use]
+    pub fn defense_advantage(&self) -> crate::sheet::roll::Advantage {
+        crate::sheet::roll::Advantage::resolve(
+            self.attacks_against_advantage,
+            self.attacks_against_disadvantage,
+        )
+    }
+
+    /// Advantage state for this sheet's ability checks.
+    #[must_use]
+    pub fn check_advantage(&self) -> crate::sheet::roll::Advantage {
+        crate::sheet::roll::Advantage::resolve(false, self.check_disadvantage)
+    }
+
+    /// Advantage state for this sheet's saving throws with `score`
+    /// (Restrained: Dex saves at disadvantage).
+    #[must_use]
+    pub fn save_advantage(&self, score: Score) -> crate::sheet::roll::Advantage {
+        let dis = self
+            .condition_kinds
+            .iter()
+            .any(|k| k.disadvantage_on_saves().contains(&score));
+        crate::sheet::roll::Advantage::resolve(false, dis)
     }
 }

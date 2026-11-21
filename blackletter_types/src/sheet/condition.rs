@@ -178,6 +178,12 @@ impl ConditionKind {
     pub fn melee_hits_are_auto_critical(&self) -> bool {
         matches!(self, Self::Paralyzed | Self::Unconscious)
     }
+
+    /// The creature's own attack rolls have advantage (Invisible).
+    #[must_use]
+    pub fn own_attacks_have_advantage(&self) -> bool {
+        matches!(self, Self::Invisible)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Hash)]
