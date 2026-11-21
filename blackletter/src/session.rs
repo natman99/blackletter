@@ -13,7 +13,9 @@ use crate::root::Mode;
 #[serde(rename_all = "snake_case")]
 pub enum StoredMode {
     #[default]
+    #[serde(alias = "Sheet")]
     Sheet,
+    #[serde(alias = "Dungeon")]
     Dungeon,
 }
 
@@ -96,6 +98,12 @@ mod tests {
         let partial = load(&path);
         assert_eq!(partial.mode, StoredMode::Dungeon);
         assert!(partial.sheets.is_empty());
+
+        // A pre-rename session file (capitalized mode) still loads.
+        std::fs::write(&path, r#"{"mode": "Sheet", "campaign": "/x"}"#).unwrap();
+        let legacy = load(&path);
+        assert_eq!(legacy.mode, StoredMode::Sheet);
+        assert_eq!(legacy.campaign.as_deref(), Some(std::path::Path::new("/x")));
 
         // A corrupt file is a fresh session, not a crash.
         std::fs::write(&path, "not json").unwrap();
