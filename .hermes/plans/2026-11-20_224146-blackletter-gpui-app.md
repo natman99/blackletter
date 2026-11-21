@@ -145,6 +145,7 @@ Three features the rulings need that the engine doesn't have yet. Each = its own
 - Gate: `cargo test -p blackletter_types` green; rhai scope vars for the new seams (follow the `extract_opt!` pitfall for `concentrating: Option`).
 
 ### Task 3.1 — Sheet document entity + layout
+**DONE (6d89c36).** `sheet_view/{mod.rs,doc.rs}`: SheetDoc (snapshot undo cap 64, try_edit), nav/center/summary layout, Basic section (Field rename, class +/- with PB+slot sync), Abilities display, root switch_sheet on ctrl-,/. Live-verified.
 - `blackletter/src/sheet_view/mod.rs`: `SheetDoc { character: Character, undo: … }`. Layout: left = section nav (Basic / Abilities / Skills & Saves / Combat / Spells / Inventory / Features & Feats / Conditions / Notes), center = section form, right = always-visible summary card (AC, HP bar, speed, PB, passive perception, death saves, exhaustion, active conditions).
 - Basic section: name, race display, class levels editor (`Classes` supports multiclass — level +/- per class, `sync_proficiency_bonus()` + `sync_spell_slots()` after every level change).
 
