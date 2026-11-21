@@ -1,6 +1,8 @@
 use std::{fs, sync::Arc};
 
-use blackletter_types::database::{condition::Condition, generic::Generic, spell::DatabaseSpell, traits::Trait};
+use blackletter_types::database::{
+    condition::Condition, generic::Generic, spell::DatabaseSpell, traits::Trait,
+};
 
 const SPELLS_PATH: &'static str = r"../5e-database/src/2014/en/5e-SRD-Spells.json";
 const CONDITIONS_PATH: &'static str = r"../5e-database/src/2014/en/5e-SRD-Conditions.json";

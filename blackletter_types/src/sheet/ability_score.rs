@@ -89,7 +89,10 @@ mod tests {
     fn test_modifier_matches_srd_formula() {
         // SRD: modifier = (score - 10) / 2, rounded down, for scores 1..=30.
         for score in 1..=30 {
-            let a = AbilityScore { base: score, bonus: 0 };
+            let a = AbilityScore {
+                base: score,
+                bonus: 0,
+            };
             assert_eq!(a.modifier(), (score - 10).div_euclid(2), "score {score}");
         }
     }

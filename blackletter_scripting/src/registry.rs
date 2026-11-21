@@ -1,4 +1,3 @@
-
 use blackletter_types::{
     Character, Item,
     condition::Condition,
@@ -94,7 +93,10 @@ async fn fetch_dnd_5e(url: Url) -> Result<String, FetchError> {
 }
 
 fn dnd5e_url(spell_name: &str) -> Result<Url, url::ParseError> {
-    let s = spell_name.replace('\'', "").replace(' ', "-").to_lowercase();
+    let s = spell_name
+        .replace('\'', "")
+        .replace(' ', "-")
+        .to_lowercase();
     info!("{s}");
     let i = format!("https://dnd5e.wikidot.com/spell:{s}");
     let url = Url::parse(&i)?;

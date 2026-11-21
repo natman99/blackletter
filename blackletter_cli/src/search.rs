@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use blackletter_types::database::{condition::Condition, generic::Generic, spell::DatabaseSpell, traits::Trait};
+use blackletter_types::database::{
+    condition::Condition, generic::Generic, spell::DatabaseSpell, traits::Trait,
+};
 use edit_distance::edit_distance;
 use enumflags2::bitflags;
 
@@ -118,8 +120,7 @@ pub fn filter<'a>(term: &str, data: &[&str], threshold: usize) -> Vec<usize> {
         .enumerate()
         .filter(|f| {
             let s = f.1;
-            s.split(" ")
-                .any(|i| edit_distance(i, first) < threshold)
+            s.split(" ").any(|i| edit_distance(i, first) < threshold)
         })
         .map(|(i, f)| (i, *f))
         .collect::<Vec<(usize, &str)>>();

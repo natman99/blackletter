@@ -24,7 +24,8 @@ pub fn add(command: &str, app: &mut App) -> command::Result<()> {
     if let Some(ref result) = results.get(0) {
         let spell = (**result).clone();
 
-        let spell = Spell::try_from_database(spell, &app.sheet).map_err(|e| CommandError::CommandError(e.into_boxed_dyn_error()))?;
+        let spell = Spell::try_from_database(spell, &app.sheet)
+            .map_err(|e| CommandError::CommandError(e.into_boxed_dyn_error()))?;
 
         app.sheet.spells.spells.insert(spell.name.clone(), spell);
     } else {

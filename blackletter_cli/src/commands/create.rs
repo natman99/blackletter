@@ -1,6 +1,4 @@
-use blackletter_types::{
-    Item, database::spell::DatabaseSpell, feature::Feature, spells::Spell,
-};
+use blackletter_types::{Item, database::spell::DatabaseSpell, feature::Feature, spells::Spell};
 
 use crate::{
     App,
@@ -12,7 +10,9 @@ pub fn create(cmd: &str, app: &mut App) -> command::Result<()> {
 
     if let Some(kind) = split.get(1) {
         if ["spell", "feature", "item"].contains(kind) {
-            let res = std::process::Command::new("blackletter_ui").arg(kind).output();
+            let res = std::process::Command::new("blackletter_ui")
+                .arg(kind)
+                .output();
             match res {
                 Ok(res) => {
                     let s = match String::from_utf8(res.stdout) {
@@ -27,7 +27,9 @@ pub fn create(cmd: &str, app: &mut App) -> command::Result<()> {
                                 Ok(spell) => {
                                     let name = spell.name.clone();
                                     let spell = Spell::try_from_database(spell, &app.sheet)
-                                        .map_err(|e| CommandError::CommandError(e.into_boxed_dyn_error()))?;
+                                        .map_err(|e| {
+                                            CommandError::CommandError(e.into_boxed_dyn_error())
+                                        })?;
                                     app.sheet.spells.spells.insert(name, spell);
                                 }
                                 Err(a) => return Err(CommandError::CommandError(Box::new(a))),

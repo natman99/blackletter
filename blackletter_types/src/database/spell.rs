@@ -2,7 +2,7 @@ use std::fmt::Display;
 
 #[cfg(feature = "schema")]
 use schemars::JsonSchema;
-#[cfg(feature= "serde")]
+#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

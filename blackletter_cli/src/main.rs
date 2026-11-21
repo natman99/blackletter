@@ -79,7 +79,9 @@ fn main() -> color_eyre::Result<()> {
                 }
                 Command::Generate { kind } => {
                     let string = match kind {
-                        GenerateKind::Spell => generate::<blackletter_types::database::spell::DatabaseSpell>(),
+                        GenerateKind::Spell => {
+                            generate::<blackletter_types::database::spell::DatabaseSpell>()
+                        }
                         GenerateKind::Item => generate::<blackletter_types::Item>(),
                         GenerateKind::Feature => generate::<blackletter_types::feature::Feature>(),
                     };
