@@ -120,7 +120,7 @@ impl Display for Effect {
             Effect::Sense(sense) => format!("{sense}"),
             Effect::AddProficiency(skill) => format!("{skill}"),
             Effect::InitiativeBonus(b) => format!("Initiative {:+}", b),
-            Effect::Condition(condition) => format!("{}", condition.name),
+            Effect::Condition(condition) => format!("{}", condition.kind),
             Effect::Expertise(skill) => format!("Expertise {skill}"),
         };
         write!(f, "{}", s)
