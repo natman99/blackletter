@@ -3,6 +3,7 @@
 mod autosave;
 mod campaign;
 mod dungeon_view;
+mod field;
 mod files;
 mod root;
 mod session;
@@ -22,6 +23,7 @@ fn main() {
     app.run(move |cx: &mut App| {
         cx.bind_keys(root::keybindings());
         cx.bind_keys(dungeon_view::keybindings());
+        cx.bind_keys(field::field_keys(dungeon_view::FIELD_CTX));
         autosave::Autosave::init(cx);
         let window = match cx.open_window(
             WindowOptions {

@@ -23,11 +23,63 @@ use blackletter_dungeon::model::{
     Connection, Direction, Door, DoorId, Dungeon, FloorId, Lock, Room, RoomId, VerticalKind,
 };
 
+use crate::field::{Field, FieldElement, FieldOwner};
 use crate::root::RootView;
 pub use doc::DungeonDoc;
 use paint::Geometry;
 
 pub const DUNGEON_CTX: &str = "Dungeon";
+/// Active while the one-line editor is open: the dungeon keys go quiet and the
+/// field keys take over (shale's context-scoped chord scheme).
+pub const FIELD_CTX: &str = "Field";
+
+/// The right-hand room panel: name, notes, state flags (discoverability —
+/// the plan asks for the flags as text, not just key letters), and the
+/// one-line editor when one is open.
+fn room_panel(
+    data: (Option<(String, String, String, String)>, bool),
+    entity: gpui::Entity<DungeonView>,
+) -> impl IntoElement {
+    let (room, field_open) = data;
+    let mut this = div()
+        .absolute()
+        .top_10()
+        .right_2()
+        .w(px(240.0))
+        .p_3()
+        .rounded(px(6.0))
+        .bg(Palette::room_fill())
+        .border_1()
+        .border_color(Palette::room_border())
+        .text_xs()
+        .text_color(Palette::text());
+    match room {
+        Some((name, flags, tags, notes)) => {
+            this = this
+                .child(div().text_color(Palette::accent()).child(name))
+                .child(div().text_color(Palette::muted()).child(flags))
+                .child(div().child(tags));
+            if !notes.is_empty() && !field_open {
+                this = this.child(div().text_color(Palette::muted()).child(notes));
+            }
+        }
+        None => {
+            this = this.child(
+                div()
+                    .text_color(Palette::muted())
+                    .child("no room under cursor"),
+            )
+        }
+    }
+    if field_open {
+        this = this.child(div().mt_2().child(FieldElement::new(entity)));
+    }
+    this
+}
+
+/// `$after` hook for [`crate::field_key_actions!`]: cut/paste change the text,
+/// and nothing downstream reranks off a dungeon field.
+pub fn after_field_change(_v: &mut DungeonView, _cx: &mut gpui::Context<DungeonView>) {}
 
 actions!(
     dungeon,
@@ -74,6 +126,8 @@ actions!(
         SaveDungeon,
         Cancel,
         ToggleHelp,
+        RenameRoom,
+        EditNotes,
     ]
 );
 
@@ -131,6 +185,8 @@ pub fn keybindings() -> Vec<KeyBinding> {
         "ctrl-s" => SaveDungeon,
         "escape" => Cancel,
         "?" => ToggleHelp,
+        "enter" => RenameRoom,
+        "shift-o" => EditNotes,
     );
     kb
 }
@@ -187,8 +243,19 @@ pub struct DungeonView {
     geo: Option<Geometry>,
     show_help: bool,
     dragging: Option<Point<Pixels>>,
+    /// An active one-line editor: what it edits, and its text.
+    field: Option<(FieldTarget, Field)>,
+    /// Stands in for `field()` when no field is active (the trait wants a `&`).
+    blank: Field,
     focus_handle: FocusHandle,
     root: WeakEntity<RootView>,
+}
+
+/// What the active [`Field`] edits.
+#[derive(Clone, Copy)]
+pub enum FieldTarget {
+    RoomName(RoomId),
+    RoomNotes(RoomId),
 }
 
 impl DungeonView {
@@ -215,6 +282,8 @@ impl DungeonView {
             geo: None,
             show_help: false,
             dragging: None,
+            field: None,
+            blank: Field::new(""),
             focus_handle: cx.focus_handle(),
             root,
         }
@@ -243,8 +312,153 @@ impl DungeonView {
         });
     }
 
+    /// Open the one-line editor over the cursor room's name.
+    fn on_rename_room(&mut self, _: &RenameRoom, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(rid) = self.cursor_room() else {
+            self.report("cursor is not on a room", cx);
+            return;
+        };
+        let Some(r) = self.doc.dungeon.room(rid) else {
+            return;
+        };
+        let initial = r.name.clone().unwrap_or_default();
+        let mut field = Field::new(&initial);
+        // Rename opens with the name selected: typing replaces it, which is
+        // what a rename means; the old name is one arrow key away.
+        field.select_all();
+        self.field = Some((FieldTarget::RoomName(rid), field));
+        self.report("renaming room — enter commits, esc cancels", cx);
+        cx.notify();
+    }
+
+    /// Open the one-line editor over the cursor room's notes.
+    fn on_edit_notes(&mut self, _: &EditNotes, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(rid) = self.cursor_room() else {
+            self.report("cursor is not on a room", cx);
+            return;
+        };
+        let Some(r) = self.doc.dungeon.room(rid) else {
+            return;
+        };
+        let initial = r.notes.clone();
+        self.field = Some((FieldTarget::RoomNotes(rid), Field::new(&initial)));
+        self.report("editing notes — enter commits, esc cancels", cx);
+        cx.notify();
+    }
+
+    fn on_field_submit(
+        &mut self,
+        _: &crate::field::FieldSubmit,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.commit_field(cx);
+    }
+
+    fn on_field_cancel(
+        &mut self,
+        _: &crate::field::FieldCancel,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.field.take().is_some() {
+            self.report("edit cancelled", cx);
+            cx.notify();
+        }
+    }
+
+    /// Write the field's text into its target (one undo snapshot), or drop it
+    /// if the target vanished underneath (deleted room).
+    fn commit_field(&mut self, cx: &mut Context<Self>) {
+        let Some((target, field)) = self.field.take() else {
+            return;
+        };
+        let text = field.text().trim().to_string();
+        let (label, ok) = match target {
+            FieldTarget::RoomName(rid) => {
+                let existed = self.doc.dungeon.room(rid).is_some();
+                if existed {
+                    let t = text.clone();
+                    self.doc.edit(move |d| {
+                        if let Some(r) = d.room_mut(rid) {
+                            r.name = if t.is_empty() { None } else { Some(t) };
+                        }
+                    });
+                }
+                (format!("room renamed to {text}"), existed)
+            }
+            FieldTarget::RoomNotes(rid) => {
+                let existed = self.doc.dungeon.room(rid).is_some();
+                if existed {
+                    let t = text.clone();
+                    self.doc.edit(move |d| {
+                        if let Some(r) = d.room_mut(rid) {
+                            r.notes = t;
+                        }
+                    });
+                }
+                ("notes updated".to_string(), existed)
+            }
+        };
+        if ok {
+            self.report(label, cx);
+        } else {
+            self.report("that room is gone — edit dropped", cx);
+        }
+        cx.notify();
+    }
+
     fn cursor_room(&self) -> Option<RoomId> {
         self.doc.dungeon.room_at(self.active_floor, self.cursor)
+    }
+
+    /// What the room panel shows, gathered before the element chain so the
+    /// chain's `cx.listener` borrows don't collide with the panel's.
+    fn panel_data(&self) -> (Option<(String, String, String, String)>, bool) {
+        let field_open = self.field.is_some();
+        let Some(r) = self
+            .cursor_room()
+            .and_then(|rid| self.doc.dungeon.room(rid))
+        else {
+            return (None, field_open);
+        };
+        let name = r.name.clone().unwrap_or_else(|| format!("Room {}", r.id.0));
+        let flags = format!(
+            "trap:{}  enemies:{}  loot:{}",
+            match r.trap {
+                blackletter_dungeon::model::TrapState::None => "-",
+                blackletter_dungeon::model::TrapState::Active => "ACTIVE",
+                blackletter_dungeon::model::TrapState::Disarmed => "disarmed",
+            },
+            match r.enemies {
+                blackletter_dungeon::model::EnemyState::Unknown => "-",
+                blackletter_dungeon::model::EnemyState::Active => "ACTIVE",
+                blackletter_dungeon::model::EnemyState::Cleared => "cleared",
+            },
+            match r.loot {
+                blackletter_dungeon::model::LootState::Unknown => "-",
+                blackletter_dungeon::model::LootState::Present => "there",
+                blackletter_dungeon::model::LootState::Taken => "taken",
+                blackletter_dungeon::model::LootState::None => "-",
+            },
+        );
+        let mut tags: Vec<String> = Vec::new();
+        if r.secret {
+            tags.push("secret".into());
+        }
+        if r.searched {
+            tags.push("searched".into());
+        }
+        if r.is_exit {
+            tags.push("exit".into());
+        }
+        if let Some(p) = r.parent {
+            tags.push(format!("child of #{}", p.0));
+        }
+        (
+            Some((name, flags, tags.join("  "), r.notes.clone())),
+            field_open,
+        )
     }
 
     /// The single mutation path: snapshot/undo via the doc, drop the stale
@@ -722,6 +936,119 @@ impl DungeonView {
     }
 }
 
+impl FieldOwner for DungeonView {
+    fn field(&self) -> &Field {
+        self.field.as_ref().map_or(&self.blank, |(_, f)| f)
+    }
+
+    fn field_mut(&mut self) -> &mut Field {
+        match &mut self.field {
+            Some((_, f)) => f,
+            None => &mut self.blank,
+        }
+    }
+
+    fn family(&self) -> SharedString {
+        "monospace".into()
+    }
+
+    fn size(&self) -> f32 {
+        12.0
+    }
+
+    fn focus(&self) -> FocusHandle {
+        self.focus_handle.clone()
+    }
+}
+
+/// Printable characters reach the active field through this; with no field
+/// active the view claims no selection and swallows nothing.
+impl gpui::EntityInputHandler for DungeonView {
+    fn text_for_range(
+        &mut self,
+        range_utf16: std::ops::Range<usize>,
+        actual_range: &mut Option<std::ops::Range<usize>>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<String> {
+        let (_, f) = self.field.as_ref()?;
+        let (text, used) = f.text_in_utf16(range_utf16);
+        actual_range.replace(used);
+        Some(text)
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _ignore_disabled_input: bool,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<gpui::UTF16Selection> {
+        Some(self.field.as_ref()?.1.caret_selection())
+    }
+
+    fn marked_text_range(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<std::ops::Range<usize>> {
+        None
+    }
+
+    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
+
+    fn character_index_for_point(
+        &mut self,
+        _point: gpui::Point<Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        // The panel field is keyboard-driven; the IME candidate geometry it
+        // would answer with the field's live bounds is not needed yet.
+        None
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        range_utf16: Option<std::ops::Range<usize>>,
+        new_text: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some((_, f)) = self.field.as_mut() {
+            f.replace_utf16(range_utf16, new_text);
+            cx.notify();
+        }
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        range_utf16: Option<std::ops::Range<usize>>,
+        new_text: &str,
+        _new_selected_range: Option<std::ops::Range<usize>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Composition is not tracked separately: the composing text is shown
+        // as ordinary text.
+        self.replace_text_in_range(range_utf16, new_text, window, cx);
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        range_utf16: std::ops::Range<usize>,
+        bounds: gpui::Bounds<gpui::Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<gpui::Bounds<gpui::Pixels>> {
+        let offset = self.field.as_ref()?.1.offset_from_utf16(range_utf16.start);
+        let x = crate::field::PAD + (offset as f32 * crate::field::approx_char_width());
+        Some(gpui::Bounds::from_corners(
+            gpui::point(bounds.left() + px(x), bounds.top()),
+            gpui::point(bounds.left() + px(x + 8.), bounds.bottom()),
+        ))
+    }
+}
+
 impl Focusable for DungeonView {
     fn focus_handle(&self, _: &gpui::App) -> FocusHandle {
         self.focus_handle.clone()
@@ -755,6 +1082,9 @@ impl Render for DungeonView {
         let click = cx.listener(
             |view: &mut DungeonView, ev: &gpui::ClickEvent, window, cx| {
                 view.focus_handle.focus(window, cx);
+                if view.field.is_some() {
+                    return; // the field owns the keyboard; clicks wait
+                }
                 let Some(geo) = view.geo else { return };
                 let cell = paint::cell_at(geo, ev.position());
                 view.cursor = cell;
@@ -822,8 +1152,10 @@ impl Render for DungeonView {
         );
         let show_help = self.show_help;
 
+        let field_active = self.field.is_some();
+        let panel_data = self.panel_data();
         div()
-            .key_context(DUNGEON_CTX)
+            .key_context(if field_active { FIELD_CTX } else { DUNGEON_CTX })
             .track_focus(&self.focus_handle)
             .size_full()
             .relative()
@@ -938,6 +1270,42 @@ impl Render for DungeonView {
                     .text_color(Palette::muted())
                     .child(title),
             )
+            .child(room_panel(panel_data, cx.entity()))
+            .on_action(cx.listener(|v, a: &RenameRoom, w, c| v.on_rename_room(a, w, c)))
+            .on_action(cx.listener(|v, a: &EditNotes, w, c| v.on_edit_notes(a, w, c)))
+            .on_action(
+                cx.listener(|v, a: &crate::field::FieldSubmit, w, c| v.on_field_submit(a, w, c)),
+            )
+            .on_action(
+                cx.listener(|v, a: &crate::field::FieldCancel, w, c| v.on_field_cancel(a, w, c)),
+            )
+            .when(field_active, |this| {
+                let this = crate::field_key_actions!(this, cx, after_field_change);
+                this.on_action(cx.listener(|v, _: &crate::field::FieldBackspace, _, cx| {
+                    v.field_mut().backspace();
+                    cx.notify();
+                }))
+                .on_action(cx.listener(|v, _: &crate::field::FieldDelete, _, cx| {
+                    v.field_mut().delete_forward();
+                    cx.notify();
+                }))
+                .on_action(
+                    cx.listener(|v, _: &crate::field::FieldDeleteWordBack, _, cx| {
+                        v.field_mut().delete_word_back();
+                        cx.notify();
+                    }),
+                )
+                .on_action(cx.listener(|v, _: &crate::field::FieldLeft, _, cx| {
+                    v.field_mut().step_caret(-1);
+                    cx.notify();
+                }))
+                .on_action(cx.listener(
+                    |v, _: &crate::field::FieldRight, _, cx| {
+                        v.field_mut().step_caret(1);
+                        cx.notify();
+                    },
+                ))
+            })
             .when(show_help, |this| {
                 this.child(
                     div()
@@ -970,6 +1338,7 @@ p             route party→cursor
 shift-P       route cursor→entrance
 t s c x e o   room: trap secret searched exit enemies loot
 + - 0         zoom in / out / reset   drag mid/right: pan
+enter         rename room       shift-O edit notes
 ctrl-z / ctrl-shift-z  undo / redo    ctrl-s save
 ?             this help               esc cancel/clear"#;
 
@@ -993,6 +1362,7 @@ mod tests {
         cx.update(|cx| {
             cx.bind_keys(crate::root::keybindings());
             cx.bind_keys(keybindings());
+            cx.bind_keys(crate::field::field_keys(FIELD_CTX));
             crate::autosave::Autosave::init(cx);
         });
         let window = cx.add_window(|_, cx| RootView::new(cx, Session::default(), None));
@@ -1082,5 +1452,60 @@ mod tests {
                 .count()
         });
         assert_eq!(floor_rooms, 1);
+    }
+
+    /// Enter opens the rename field, typed text lands in it through the input
+    /// handler, and enter commits it to the room.
+    #[test]
+    fn enter_rename_type_enter_commits() {
+        let mut cx = TestAppContext::single();
+        let (window, root) = open_dungeon(&mut cx);
+        cx.simulate_keystrokes(window.into(), "enter");
+        cx.run_until_parked();
+        let opened = cx.read(|cx| {
+            root.read(cx)
+                .dungeon_view()
+                .unwrap()
+                .read(cx)
+                .field
+                .is_some()
+        });
+        assert!(opened, "enter opened the field");
+        cx.simulate_input(window.into(), "Goblin Lair");
+        cx.run_until_parked();
+        let typed = cx.read(|cx| {
+            root.read(cx)
+                .dungeon_view()
+                .unwrap()
+                .read(cx)
+                .field
+                .as_ref()
+                .map(|(_, f)| f.text().to_string())
+        });
+        assert_eq!(
+            typed.as_deref(),
+            Some("Goblin Lair"),
+            "input reached the field"
+        );
+        cx.simulate_keystrokes(window.into(), "enter");
+        cx.run_until_parked();
+        let d = dungeon(&cx, &root);
+        let rid = d.entrance;
+        assert_eq!(d.room(rid).unwrap().name.as_deref(), Some("Goblin Lair"));
+    }
+
+    /// Escape drops the field without touching the room.
+    #[test]
+    fn escape_cancels_the_field() {
+        let mut cx = TestAppContext::single();
+        let (window, root) = open_dungeon(&mut cx);
+        cx.simulate_keystrokes(window.into(), "enter");
+        cx.run_until_parked();
+        cx.simulate_input(window.into(), "nope");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "escape");
+        cx.run_until_parked();
+        let d = dungeon(&cx, &root);
+        assert_ne!(d.room(d.entrance).unwrap().name.as_deref(), Some("nope"));
     }
 }

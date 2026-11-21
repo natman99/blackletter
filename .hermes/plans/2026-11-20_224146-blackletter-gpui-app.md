@@ -2,7 +2,7 @@
 
 > **For Hermes:** use the subagent-driven-development skill to implement this plan phase-by-phase. Each phase ends green at the gates before the next starts.
 
-**Progress (2026-11-20):** Phase 0 DONE (iced deleted 4c26c64; blackletter_dungeon ported, 46 tests 8233bec; gpui scaffold live-verified 4b32f5f). Phase 1 DONE (app shell c35cd42; session+autosave 140404c — 0% idle CPU verified; campaign folders + rfd pickers 22e9746; windows-gnu build green). Keybindings live: ctrl-1/2 modes, ctrl-N new campaign, ctrl-O open campaign.
+**Progress (2026-11-21):** Phase 0 DONE (iced deleted 4c26c64; blackletter_dungeon ported 8233bec; gpui scaffold live-verified 4b32f5f). Phase 1 DONE (app shell c35cd42; session+autosave 140404c — 0% idle CPU; campaign folders + rfd pickers 22e9746; windows-gnu green). Phase 2 DONE (lock/open door upgrade ec155d3; GPUI dungeon view 6817ed7 — canvas map, 41 keyboard actions, undo/redo, pan/zoom, help overlay, jump-centers-camera, same-floor path overlay, DC labels above door bars, dungeon switcher ctrl-,/ctrl-.). 14 app + 47 dungeon tests.
 
 **Goal:** Replace the jank iced GUI with a single GPUI desktop app (`blackletter`) that (1) creates and manages D&D 5e character sheets as completely as possible, and (2) folds in a rewrite of `~/Documents/Coding/Rust/dungeon-tracker` as a second mode — auto-saving, working on Linux and Windows.
 
