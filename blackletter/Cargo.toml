@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 anyhow = "1"
 blackletter_dungeon = { path = "../blackletter_dungeon" }
+blackletter_types = { path = "../blackletter_types", features = ["serde", "schema"] }
 directories = "6.0.0"
 glam = "0.33"
 futures = "0.3"

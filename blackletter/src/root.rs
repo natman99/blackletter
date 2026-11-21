@@ -11,6 +11,7 @@ use gpui::{
 use crate::autosave::Autosave;
 use crate::dungeon_view::{self, DungeonDoc, DungeonView};
 use crate::session::Session;
+use crate::sheet_view::{self, SheetDoc, SheetView};
 use std::path::PathBuf;
 
 actions!(
@@ -52,6 +53,7 @@ pub struct RootView {
     session: Session,
     session_path: Option<PathBuf>,
     dungeon: Option<Entity<DungeonView>>,
+    sheet: Option<Entity<SheetView>>,
 }
 
 impl RootView {
@@ -64,6 +66,7 @@ impl RootView {
             session,
             session_path,
             dungeon: None,
+            sheet: None,
         }
     }
 
@@ -90,6 +93,8 @@ impl RootView {
         self.save_session();
         if mode == Mode::Dungeon {
             self.ensure_dungeon(window, cx);
+        } else {
+            self.ensure_sheet(window, cx);
         }
         cx.notify();
     }
@@ -101,6 +106,102 @@ impl RootView {
             let view = self.build_dungeon(cx);
             window.focus(&view.read(cx).focus_handle(cx), cx);
         }
+    }
+
+    /// Build (if needed) and focus the sheet view.
+    pub fn ensure_sheet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.sheet.is_none() {
+            let view = self.build_sheet(cx);
+            window.focus(&view.read(cx).focus_handle(cx), cx);
+        }
+    }
+
+    /// Build the sheet view (first character of the campaign, else a fresh
+    /// doc) and register its autosave saver.
+    fn build_sheet(&mut self, cx: &mut Context<Self>) -> Entity<SheetView> {
+        let (doc, dir) = self.sheet_doc_or_new();
+        let root = cx.entity().downgrade();
+        let view = sheet_view::build(doc, dir.clone(), root, cx);
+        let weak = view.downgrade();
+        let id = view.entity_id();
+        cx.global_mut::<Autosave>().register(
+            id,
+            Box::new(move |cx| weak.update(cx, |v, _| v.save_if_dirty()).unwrap_or(false)),
+        );
+        self.sheet = Some(view.clone());
+        view
+    }
+
+    fn sheet_doc_or_new(&self) -> (SheetDoc, Option<PathBuf>) {
+        if let Some(root) = &self.session.campaign {
+            let campaign = crate::campaign::Campaign { root: root.clone() };
+            let dir = campaign.characters_dir();
+            if let Some(first) = campaign.list_characters().into_iter().next()
+                && let Ok(doc) = SheetDoc::load(&first)
+            {
+                return (doc, Some(dir));
+            }
+            return (SheetDoc::new(campaign.meta().name), Some(dir));
+        }
+        (SheetDoc::new("New Sheet"), None)
+    }
+
+    /// Cycle the open sheet within the campaign's `characters/` folder.
+    pub fn switch_sheet(&mut self, delta: i32, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(root) = self.session.campaign.clone() else {
+            self.set_status("no campaign open (ctrl-O)", cx);
+            return;
+        };
+        let campaign = crate::campaign::Campaign { root };
+        let list = campaign.list_characters();
+        if list.is_empty() {
+            self.set_status("no sheets in this campaign", cx);
+            return;
+        }
+        let current = self
+            .sheet
+            .as_ref()
+            .and_then(|v| v.read(cx).doc().file.clone());
+        let idx = list
+            .iter()
+            .position(|p| Some(p) == current.as_ref())
+            .unwrap_or(0);
+        let next = (idx as i32 + delta).rem_euclid(list.len() as i32) as usize;
+        let path = list[next].clone();
+        if let Some(view) = self.sheet.take() {
+            let id = view.entity_id();
+            view.update(cx, |v, _| {
+                v.save_if_dirty();
+            });
+            cx.global_mut::<Autosave>().unregister(id);
+        }
+        match SheetDoc::load(&path) {
+            Ok(doc) => {
+                let name = doc.character.name.clone();
+                let view = self.build_sheet_with(doc, Some(campaign.characters_dir()), cx);
+                window.focus(&view.read(cx).focus_handle(cx), cx);
+                self.set_status(format!("opened sheet {name}"), cx);
+            }
+            Err(e) => self.set_status(format!("could not open {}: {e}", path.display()), cx),
+        }
+    }
+
+    fn build_sheet_with(
+        &mut self,
+        doc: SheetDoc,
+        dir: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) -> Entity<SheetView> {
+        let root = cx.entity().downgrade();
+        let view = sheet_view::build(doc, dir, root, cx);
+        let weak = view.downgrade();
+        let id = view.entity_id();
+        cx.global_mut::<Autosave>().register(
+            id,
+            Box::new(move |cx| weak.update(cx, |v, _| v.save_if_dirty()).unwrap_or(false)),
+        );
+        self.sheet = Some(view.clone());
+        view
     }
 
     /// Build the dungeon view (first dungeon of the campaign, else a fresh
@@ -162,11 +263,19 @@ impl RootView {
     }
 
     fn on_prev_dungeon(&mut self, _: &PrevDungeon, window: &mut Window, cx: &mut Context<Self>) {
-        self.switch_dungeon(-1, window, cx);
+        if self.mode == Mode::Sheet {
+            self.switch_sheet(-1, window, cx);
+        } else {
+            self.switch_dungeon(-1, window, cx);
+        }
     }
 
     fn on_next_dungeon(&mut self, _: &NextDungeon, window: &mut Window, cx: &mut Context<Self>) {
-        self.switch_dungeon(1, window, cx);
+        if self.mode == Mode::Sheet {
+            self.switch_sheet(1, window, cx);
+        } else {
+            self.switch_dungeon(1, window, cx);
+        }
     }
 
     /// Cycle the open dungeon within the campaign's `dungeons/` folder.
@@ -230,9 +339,10 @@ impl RootView {
         let campaign = crate::campaign::Campaign { root: path.clone() };
         self.session.campaign = Some(path);
         self.save_session();
-        // The dungeon view is campaign-scoped: rebuild it lazily so the new
-        // campaign's dungeons (and its save dir) take over.
+        // The mode views are campaign-scoped: rebuild them lazily so the new
+        // campaign's docs (and their save dirs) take over.
         self.dungeon = None;
+        self.sheet = None;
         self.set_status(
             format!(
                 "opened campaign {} — {} sheets, {} dungeons",
@@ -265,6 +375,11 @@ impl RootView {
     #[allow(dead_code)] // read by tests; the tab bar will use it
     pub fn dungeon_view(&self) -> Option<&gpui::Entity<DungeonView>> {
         self.dungeon.as_ref()
+    }
+
+    #[allow(dead_code)] // read by sheet_view tests
+    pub fn sheet_view(&self) -> Option<&gpui::Entity<SheetView>> {
+        self.sheet.as_ref()
     }
 
     // Read by the session restore path (Task 1.2).
@@ -318,9 +433,9 @@ impl Render for RootView {
             // Center: the active mode's view.
             .child(
                 div().flex_1().flex().bg(gpui::rgb(0x24_24_30)).child(
-                    match (self.mode, self.dungeon.clone()) {
-                        (Mode::Dungeon, Some(view)) => view.into_any_element(),
-                        (Mode::Dungeon, None) => div()
+                    match (self.mode, self.dungeon.clone(), self.sheet.clone()) {
+                        (Mode::Dungeon, Some(view), _) => view.into_any_element(),
+                        (Mode::Dungeon, None, _) => div()
                             .size_full()
                             .flex()
                             .items_center()
@@ -328,13 +443,14 @@ impl Render for RootView {
                             .text_2xl()
                             .child("Dungeon mode — open a campaign (ctrl-O)")
                             .into_any_element(),
-                        (Mode::Sheet, _) => div()
+                        (Mode::Sheet, _, Some(view)) => view.into_any_element(),
+                        (Mode::Sheet, _, None) => div()
                             .size_full()
                             .flex()
                             .items_center()
                             .justify_center()
                             .text_2xl()
-                            .child("Sheet mode — nothing open")
+                            .child("Sheet mode — open a campaign (ctrl-O)")
                             .into_any_element(),
                     },
                 ),

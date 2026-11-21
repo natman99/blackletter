@@ -7,6 +7,7 @@ mod field;
 mod files;
 mod root;
 mod session;
+mod sheet_view;
 
 use gpui::{App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px};
 use root::RootView;
@@ -23,6 +24,7 @@ fn main() {
     app.run(move |cx: &mut App| {
         cx.bind_keys(root::keybindings());
         cx.bind_keys(dungeon_view::keybindings());
+        cx.bind_keys(sheet_view::keybindings());
         cx.bind_keys(field::field_keys(dungeon_view::FIELD_CTX));
         autosave::Autosave::init(cx);
         let window = match cx.open_window(
@@ -53,7 +55,7 @@ fn main() {
             if view.mode() == root::Mode::Dungeon {
                 view.ensure_dungeon(window, cx);
             } else {
-                window.focus(view.focus_handle(), cx);
+                view.ensure_sheet(window, cx);
             }
         });
     });
