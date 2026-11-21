@@ -1055,8 +1055,11 @@ dependencies = [
 name = "blackletter"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "blackletter_dungeon",
  "directories",
  "futures",
+ "glam",
  "gpui",
  "gpui_platform",
  "rfd",

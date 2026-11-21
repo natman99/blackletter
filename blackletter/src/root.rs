@@ -4,15 +4,25 @@
 //! open/save/load/import path reports success AND failure here, never stderr.
 
 use gpui::{
-    Context, FocusHandle, KeyBinding, Render, SharedString, Window, actions, div, prelude::*,
+    Context, Entity, FocusHandle, Focusable, KeyBinding, Render, SharedString, Window, actions,
+    div, prelude::*,
 };
 
+use crate::autosave::Autosave;
+use crate::dungeon_view::{self, DungeonDoc, DungeonView};
 use crate::session::Session;
 use std::path::PathBuf;
 
 actions!(
     blackletter,
-    [ModeSheet, ModeDungeon, NewCampaign, OpenCampaign]
+    [
+        ModeSheet,
+        ModeDungeon,
+        NewCampaign,
+        OpenCampaign,
+        PrevDungeon,
+        NextDungeon
+    ]
 );
 
 /// The app-wide keymap. Context-scoped contexts arrive with the modes; these
@@ -23,6 +33,8 @@ pub fn keybindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-2", ModeDungeon, None),
         KeyBinding::new("ctrl-n", NewCampaign, None),
         KeyBinding::new("ctrl-o", OpenCampaign, None),
+        KeyBinding::new("ctrl-comma", PrevDungeon, None),
+        KeyBinding::new("ctrl-period", NextDungeon, None),
     ]
 }
 
@@ -39,6 +51,7 @@ pub struct RootView {
     focus_handle: FocusHandle,
     session: Session,
     session_path: Option<PathBuf>,
+    dungeon: Option<Entity<DungeonView>>,
 }
 
 impl RootView {
@@ -50,6 +63,7 @@ impl RootView {
             focus_handle: cx.focus_handle(),
             session,
             session_path,
+            dungeon: None,
         }
     }
 
@@ -74,7 +88,58 @@ impl RootView {
         let b = window.bounds();
         self.session.window_size = Some((f32::from(b.size.width), f32::from(b.size.height)));
         self.save_session();
+        if mode == Mode::Dungeon {
+            self.ensure_dungeon(window, cx);
+        }
         cx.notify();
+    }
+
+    /// Build (if needed) and focus the dungeon view. Also called at startup
+    /// when the session restores into dungeon mode.
+    pub fn ensure_dungeon(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.dungeon.is_none() {
+            let view = self.build_dungeon(cx);
+            window.focus(&view.read(cx).focus_handle(cx), cx);
+        }
+    }
+
+    /// Build the dungeon view (first dungeon of the campaign, else a fresh
+    /// doc) and register its autosave saver.
+    fn build_dungeon(&mut self, cx: &mut Context<Self>) -> Entity<DungeonView> {
+        let (doc, dir) = self.dungeon_doc_or_new();
+        self.build_dungeon_with(doc, dir, cx)
+    }
+
+    fn build_dungeon_with(
+        &mut self,
+        doc: DungeonDoc,
+        dir: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) -> Entity<DungeonView> {
+        let root = cx.entity().downgrade();
+        let view = dungeon_view::build(doc, dir, root, cx);
+        let weak = view.downgrade();
+        let id = view.entity_id();
+        cx.global_mut::<Autosave>().register(
+            id,
+            Box::new(move |cx| weak.update(cx, |v, _| v.save_if_dirty()).unwrap_or(false)),
+        );
+        self.dungeon = Some(view.clone());
+        view
+    }
+
+    fn dungeon_doc_or_new(&self) -> (DungeonDoc, Option<PathBuf>) {
+        if let Some(root) = &self.session.campaign {
+            let campaign = crate::campaign::Campaign { root: root.clone() };
+            let dir = campaign.dungeons_dir();
+            if let Some(first) = campaign.list_dungeons().into_iter().next()
+                && let Ok(doc) = DungeonDoc::load(&first)
+            {
+                return (doc, Some(dir));
+            }
+            return (DungeonDoc::new(campaign.meta().name), Some(dir));
+        }
+        (DungeonDoc::new("New Dungeon"), None)
     }
 
     fn on_mode_sheet(&mut self, _: &ModeSheet, window: &mut Window, cx: &mut Context<Self>) {
@@ -94,6 +159,55 @@ impl RootView {
             },
             cx,
         );
+    }
+
+    fn on_prev_dungeon(&mut self, _: &PrevDungeon, window: &mut Window, cx: &mut Context<Self>) {
+        self.switch_dungeon(-1, window, cx);
+    }
+
+    fn on_next_dungeon(&mut self, _: &NextDungeon, window: &mut Window, cx: &mut Context<Self>) {
+        self.switch_dungeon(1, window, cx);
+    }
+
+    /// Cycle the open dungeon within the campaign's `dungeons/` folder.
+    /// The outgoing doc is saved first if dirty.
+    pub fn switch_dungeon(&mut self, delta: i32, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(root) = self.session.campaign.clone() else {
+            self.set_status("no campaign open (ctrl-O)", cx);
+            return;
+        };
+        let campaign = crate::campaign::Campaign { root };
+        let list = campaign.list_dungeons();
+        if list.is_empty() {
+            self.set_status("no dungeons in this campaign", cx);
+            return;
+        }
+        let current = self
+            .dungeon
+            .as_ref()
+            .and_then(|v| v.read(cx).doc().file.clone());
+        let idx = list
+            .iter()
+            .position(|p| Some(p) == current.as_ref())
+            .unwrap_or(0);
+        let next = (idx as i32 + delta).rem_euclid(list.len() as i32) as usize;
+        let path = list[next].clone();
+        if let Some(view) = self.dungeon.take() {
+            let id = view.entity_id();
+            view.update(cx, |v, _| {
+                v.save_if_dirty();
+            });
+            cx.global_mut::<Autosave>().unregister(id);
+        }
+        match DungeonDoc::load(&path) {
+            Ok(doc) => {
+                let name = doc.dungeon.name.clone();
+                let view = self.build_dungeon_with(doc, Some(campaign.dungeons_dir()), cx);
+                window.focus(&view.read(cx).focus_handle(cx), cx);
+                self.set_status(format!("opened dungeon {name}"), cx);
+            }
+            Err(e) => self.set_status(format!("could not open {}: {e}", path.display()), cx),
+        }
     }
 
     fn on_new_campaign(&mut self, _: &NewCampaign, _: &mut Window, cx: &mut Context<Self>) {
@@ -116,6 +230,9 @@ impl RootView {
         let campaign = crate::campaign::Campaign { root: path.clone() };
         self.session.campaign = Some(path);
         self.save_session();
+        // The dungeon view is campaign-scoped: rebuild it lazily so the new
+        // campaign's dungeons (and its save dir) take over.
+        self.dungeon = None;
         self.set_status(
             format!(
                 "opened campaign {} — {} sheets, {} dungeons",
@@ -143,6 +260,11 @@ impl RootView {
         if let Some(path) = self.session_path.clone() {
             let _ = crate::session::save(&path, &self.session);
         }
+    }
+
+    #[allow(dead_code)] // read by tests; the tab bar will use it
+    pub fn dungeon_view(&self) -> Option<&gpui::Entity<DungeonView>> {
+        self.dungeon.as_ref()
     }
 
     // Read by the session restore path (Task 1.2).
@@ -183,6 +305,8 @@ impl Render for RootView {
             .on_action(cx.listener(Self::on_mode_dungeon))
             .on_action(cx.listener(Self::on_new_campaign))
             .on_action(cx.listener(Self::on_open_campaign))
+            .on_action(cx.listener(Self::on_prev_dungeon))
+            .on_action(cx.listener(Self::on_next_dungeon))
             // Top bar: mode tabs.
             .child(
                 div()
@@ -193,17 +317,27 @@ impl Render for RootView {
             )
             // Center: the active mode's view.
             .child(
-                div()
-                    .flex_1()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .bg(gpui::rgb(0x24_24_30))
-                    .text_2xl()
-                    .child(match self.mode {
-                        Mode::Sheet => "Sheet mode — nothing open",
-                        Mode::Dungeon => "Dungeon mode — nothing open",
-                    }),
+                div().flex_1().flex().bg(gpui::rgb(0x24_24_30)).child(
+                    match (self.mode, self.dungeon.clone()) {
+                        (Mode::Dungeon, Some(view)) => view.into_any_element(),
+                        (Mode::Dungeon, None) => div()
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_2xl()
+                            .child("Dungeon mode — open a campaign (ctrl-O)")
+                            .into_any_element(),
+                        (Mode::Sheet, _) => div()
+                            .size_full()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_2xl()
+                            .child("Sheet mode — nothing open")
+                            .into_any_element(),
+                    },
+                ),
             )
             // Bottom: the status bar (chonk: 22px + gap).
             .child(
@@ -225,7 +359,10 @@ mod tests {
     use gpui::TestAppContext;
 
     fn open(cx: &mut TestAppContext) -> (gpui::WindowHandle<RootView>, gpui::Entity<RootView>) {
-        cx.update(|cx| cx.bind_keys(keybindings()));
+        cx.update(|cx| {
+            cx.bind_keys(keybindings());
+            crate::autosave::Autosave::init(cx);
+        });
         let window = cx.add_window(|_, cx| RootView::new(cx, Session::default(), None));
         window
             .update(cx, |view, window, cx| window.focus(view.focus_handle(), cx))
@@ -255,7 +392,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("bl_session_persist_{}", std::process::id()));
         let path = dir.join("session.json");
         let _ = std::fs::remove_file(&path);
-        cx.update(|cx| cx.bind_keys(keybindings()));
+        cx.update(|cx| {
+            cx.bind_keys(keybindings());
+            crate::autosave::Autosave::init(cx);
+        });
         let window =
             cx.add_window(|_, cx| RootView::new(cx, Session::default(), Some(path.clone())));
         window

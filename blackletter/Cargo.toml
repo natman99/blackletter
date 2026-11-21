@@ -4,7 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+anyhow = "1"
+blackletter_dungeon = { path = "../blackletter_dungeon" }
 directories = "6.0.0"
+glam = "0.33"
 futures = "0.3"
 gpui = { workspace = true }
 gpui_platform = { workspace = true }

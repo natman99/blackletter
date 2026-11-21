@@ -2,6 +2,7 @@
 
 mod autosave;
 mod campaign;
+mod dungeon_view;
 mod files;
 mod root;
 mod session;
@@ -20,6 +21,7 @@ fn main() {
     let app = gpui_platform::application();
     app.run(move |cx: &mut App| {
         cx.bind_keys(root::keybindings());
+        cx.bind_keys(dungeon_view::keybindings());
         autosave::Autosave::init(cx);
         let window = match cx.open_window(
             WindowOptions {
@@ -43,7 +45,14 @@ fn main() {
             }
         };
         // The root takes the keyboard the moment it exists, so the global
-        // ctrl-1/ctrl-2 chords work before any click.
-        let _ = window.update(cx, |view, window, cx| window.focus(view.focus_handle(), cx));
+        // ctrl-1/ctrl-2 chords work before any click. A restored dungeon
+        // mode also builds (and focuses) its view here.
+        let _ = window.update(cx, |view, window, cx| {
+            if view.mode() == root::Mode::Dungeon {
+                view.ensure_dungeon(window, cx);
+            } else {
+                window.focus(view.focus_handle(), cx);
+            }
+        });
     });
 }
