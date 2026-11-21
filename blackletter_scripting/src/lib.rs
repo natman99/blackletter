@@ -121,6 +121,9 @@ impl Interface {
             walking_speed,
             languages,
             conditions,
+            death_saves,
+            exhaustion,
+            spell_slots_override,
         } = Character::default();
 
         let armor_class = armor_class.0;
@@ -147,6 +150,9 @@ impl Interface {
         scope.push("languages", languages);
         scope.push("conditions", conditions);
         scope.push("saving_throws", saving_throws);
+        scope.push("death_saves", death_saves);
+        scope.push("exhaustion", exhaustion as i64);
+        scope.push("spell_slots_override", spell_slots_override);
 
         // We should run automated additions including adding meters, abilities, calculating health, and applying item stats.
         scope.push("calculate", true);
@@ -191,6 +197,9 @@ impl Interface {
             walking_speed,
             languages,
             conditions,
+            death_saves,
+            exhaustion,
+            spell_slots_override,
         } = character;
 
         let armor_class = armor_class.0;
@@ -224,6 +233,9 @@ impl Interface {
         scope.push("languages", languages);
         scope.push("conditions", conditions);
         scope.push("saving_throws", saving_throws);
+        scope.push("death_saves", death_saves);
+        scope.push("exhaustion", exhaustion as i64);
+        scope.push("spell_slots_override", spell_slots_override);
     }
 
     fn extract_scope(&self, scope: &mut Scope) -> anyhow::Result<Character> {
@@ -263,6 +275,10 @@ impl Interface {
         let languages = extract!("languages", "languages")?;
         let conditions = extract!("conditions", "conditions")?;
         let saving_throws = extract!("saving_throws", "saving_throws")?;
+        let death_saves = extract!("death_saves", "death_saves")?;
+        let exhaustion_raw: i64 = extract!("exhaustion", "exhaustion")?;
+        let exhaustion = exhaustion_raw as u8;
+        let spell_slots_override = extract!("spell_slots_override", "spell_slots_override")?;
 
         Ok(Character {
             name,
@@ -286,6 +302,9 @@ impl Interface {
             languages,
             conditions,
             saving_throws,
+            death_saves,
+            exhaustion,
+            spell_slots_override,
         })
     }
 }
@@ -312,6 +331,7 @@ fn register_engine_types(engine: &mut Engine) {
     engine.build_type::<Spell>();
     engine.build_type::<Feat>();
     engine.build_type::<Trait>();
+    engine.build_type::<blackletter_types::death::DeathSaves>();
 
     engine.register_indexer_get_set(Classes::get, Classes::set);
 }

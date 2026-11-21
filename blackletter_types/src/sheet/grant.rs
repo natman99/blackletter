@@ -122,6 +122,11 @@ pub struct Modifiers {
     pub speed_zero: bool,
     pub melee_auto_critical: bool,
     pub own_attack_advantage: bool,
+    /// Exhaustion level (0-6); SRD effects folded in `finish`.
+    pub exhaustion_level: u8,
+    pub speed_halved: bool,
+    pub all_saves_disadvantaged: bool,
+    pub max_hp_halved: bool,
 }
 
 impl Modifiers {
@@ -181,6 +186,24 @@ impl Modifiers {
                     self.auto_fail_saves.push(score);
                 }
             }
+        }
+        // SRD exhaustion (Wiki/12 conditions.md): each level includes all
+        // lower levels' effects.
+        if self.exhaustion_level >= 1 {
+            self.check_disadvantage = true;
+        }
+        if self.exhaustion_level >= 2 {
+            self.speed_halved = true;
+        }
+        if self.exhaustion_level >= 3 {
+            self.attack_disadvantage = true;
+            self.all_saves_disadvantaged = true;
+        }
+        if self.exhaustion_level >= 4 {
+            self.max_hp_halved = true;
+        }
+        if self.exhaustion_level >= 5 {
+            self.speed_zero = true;
         }
     }
 
@@ -257,10 +280,11 @@ impl Modifiers {
     /// (Restrained: Dex saves at disadvantage).
     #[must_use]
     pub fn save_advantage(&self, score: Score) -> crate::sheet::roll::Advantage {
-        let dis = self
-            .condition_kinds
-            .iter()
-            .any(|k| k.disadvantage_on_saves().contains(&score));
+        let dis = self.all_saves_disadvantaged
+            || self
+                .condition_kinds
+                .iter()
+                .any(|k| k.disadvantage_on_saves().contains(&score));
         crate::sheet::roll::Advantage::resolve(false, dis)
     }
 }

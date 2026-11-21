@@ -18,6 +18,7 @@ pub mod spells;
 
 pub mod condition;
 pub mod damage;
+pub mod death;
 pub mod feat;
 pub mod feature;
 pub mod grant;
@@ -27,6 +28,7 @@ pub mod meter;
 pub mod saving_throws;
 pub mod senses;
 pub mod source;
+pub mod spell_slots;
 pub mod traits;
 
 pub use hit_points::HitPoints;
@@ -42,7 +44,7 @@ use crate::{
     grant::Modifiers,
     language::Languages,
     lore::Lore,
-    meter::Meters,
+    meter::{Meter, Meters, RestoreTime},
     saving_throws::SavingThrows,
     senses::Senses,
     sheet::{
@@ -81,6 +83,14 @@ pub struct Character {
     pub walking_speed: WalkingSpeed,
     pub languages: Languages,
     pub conditions: Conditions,
+    pub death_saves: crate::death::DeathSaves,
+    /// Exhaustion level 0..=6 (SRD). Set directly for house rules; the
+    /// effects are derived in `Modifiers::finish`.
+    pub exhaustion: u8,
+    /// House-rules seam for spell slots: slot counts for spell levels
+    /// 1..=9 (index 0 = 1st level). When set, replaces the derived table
+    /// until cleared; Pact Magic is unaffected (edit its meter directly).
+    pub spell_slots_override: Option<Vec<i64>>,
 }
 
 impl Character {
@@ -121,6 +131,9 @@ impl Character {
             conditions: Default::default(),
             feats: Vec::new(),
             traits: Vec::new(),
+            death_saves: Default::default(),
+            exhaustion: 0,
+            spell_slots_override: None,
             ability_scores,
             saving_throws: Default::default(),
         };
@@ -184,6 +197,7 @@ impl Character {
         for c in &self.conditions.conditions {
             m.absorb_condition(c);
         }
+        m.exhaustion_level = self.exhaustion;
         m.finish();
         m
     }
@@ -250,7 +264,8 @@ impl Character {
         if m.speed_zero {
             0
         } else {
-            self.walking_speed.0 + m.speed
+            let total = self.walking_speed.0 + m.speed;
+            if m.speed_halved { total / 2 } else { total }
         }
     }
 
@@ -465,6 +480,219 @@ impl Character {
         self.modifiers().melee_auto_critical
     }
 
+    // ---- spell slots (SRD-derived, overridable) ----
+
+    /// Effective spellcaster level (PHB 2014 multiclass spellcasting):
+    /// full levels + ceil(half/2) + ceil(third/3). Pact Magic excluded.
+    #[must_use]
+    pub fn caster_level(&self) -> i64 {
+        use crate::spell_slots::CasterProgression::*;
+        let mut level = 0i64;
+        for c in &self.classes.classes {
+            match c.class.caster_progression() {
+                Full => level += c.level.0,
+                Half => level += (c.level.0 + 1) / 2,
+                Third => level += (c.level.0 + 2) / 3,
+                None | Pact => {}
+            }
+        }
+        level
+    }
+
+    /// Spell slots (spell level -> count): the override if set, else the
+    /// SRD table for `caster_level`.
+    #[must_use]
+    pub fn spell_slots(&self) -> BTreeMap<i64, i64> {
+        if let Some(v) = &self.spell_slots_override {
+            let mut out = BTreeMap::new();
+            for (i, &count) in v.iter().enumerate() {
+                if count > 0 {
+                    out.insert(i as i64 + 1, count);
+                }
+            }
+            return out;
+        }
+        crate::spell_slots::full_caster_slots(self.caster_level())
+    }
+
+    /// Pact Magic (Warlock): (slot count, shared slot level).
+    #[must_use]
+    pub fn pact_slots(&self) -> Option<(i64, i64)> {
+        let warlock_levels: i64 = self
+            .classes
+            .classes
+            .iter()
+            .filter(|c| c.class.caster_progression() == crate::spell_slots::CasterProgression::Pact)
+            .map(|c| c.level.0)
+            .sum();
+        crate::spell_slots::pact_magic(warlock_levels)
+    }
+
+    /// Materialize spell slots as meters: `spell_slot_N` (long-rest
+    /// restore) and `pact_slot_N` (short-rest restore, SRD Pact Magic).
+    /// Manual meter edits persist as house rules until the next sync
+    /// (same pattern as `skills.proficiency_bonus`).
+    pub fn sync_spell_slots(&mut self) {
+        let slots = self.spell_slots();
+        for (level, count) in &slots {
+            let name = format!("spell_slot_{level}");
+            let m = self.meters.meters.entry(name.clone()).or_insert_with(|| {
+                Meter::new(
+                    name,
+                    0,
+                    RestoreTime {
+                        short_rest: false,
+                        long_rest: true,
+                    },
+                )
+            });
+            m.slot_number = *count as u32;
+            m.spent = m.spent.min(m.slot_number);
+            m.restore.long_rest = true;
+        }
+        self.meters.meters.retain(|name, _| {
+            if let Some(lvl) = name.strip_prefix("spell_slot_") {
+                slots.contains_key(&lvl.parse().unwrap_or(0))
+            } else {
+                true
+            }
+        });
+        match self.pact_slots() {
+            Some((count, level)) => {
+                let name = format!("pact_slot_{level}");
+                let m = self.meters.meters.entry(name.clone()).or_insert_with(|| {
+                    Meter::new(
+                        name,
+                        0,
+                        RestoreTime {
+                            short_rest: true,
+                            long_rest: true,
+                        },
+                    )
+                });
+                m.slot_number = count as u32;
+                m.spent = m.spent.min(m.slot_number);
+                m.restore.short_rest = true;
+            }
+            None => {
+                self.meters
+                    .meters
+                    .retain(|name, _| !name.starts_with("pact_slot_"));
+            }
+        }
+    }
+
+    /// Spend one slot of the given spell level (classic or Pact).
+    pub fn spend_spell_slot(&mut self, level: i64) -> bool {
+        for name in [format!("spell_slot_{level}"), format!("pact_slot_{level}")] {
+            if let Some(m) = self.meters.meters.get_mut(&name)
+                && m.check()
+            {
+                m.spend();
+                return true;
+            }
+        }
+        false
+    }
+
+    // ---- death saving throws (Wiki/07 combat.md:440) ----
+
+    /// Roll a death saving throw: d20 + `death_saves.bonus` only (SRD:
+    /// not tied to an ability score). 10+ succeeds; natural 1 is two
+    /// failures; natural 20 revives at 1 HP; three failures die; three
+    /// successes stabilize.
+    pub fn roll_death_save(
+        &mut self,
+        rng: &mut impl rand::Rng,
+    ) -> (
+        crate::sheet::roll::RollResult,
+        crate::death::DeathSaveOutcome,
+    ) {
+        use crate::death::DeathSaveOutcome::*;
+        if self.health.current > 0 {
+            self.death_saves = Default::default();
+        }
+        let result = crate::sheet::roll::Roll::new(
+            &[crate::sheet::roll::Die::D20],
+            self.death_saves.bonus as i32,
+        )
+        .roll(rng, None);
+        let nat = result.natural.unwrap_or(0);
+
+        let outcome = if nat == 20 {
+            self.health.current = 1;
+            self.death_saves = Default::default();
+            Revived
+        } else {
+            if nat == 1 {
+                self.death_saves.failures += 2;
+            } else if result.total >= 10 {
+                self.death_saves.successes += 1;
+            } else {
+                self.death_saves.failures += 1;
+            }
+            if self.death_saves.failures >= 3 {
+                Dead
+            } else if self.death_saves.successes >= 3 {
+                self.death_saves = Default::default();
+                self.death_saves.stable = true;
+                Stable
+            } else if nat == 1 || result.total < 10 {
+                Failure
+            } else {
+                Success
+            }
+        };
+        (result, outcome)
+    }
+
+    /// Damage taken at 0 HP: one death save failure (two on a crit), or
+    /// instant death if the damage meets or exceeds max HP. Also breaks
+    /// stability.
+    pub fn damage_while_down(&mut self, damage: i64, critical: bool) {
+        if self.health.current > 0 {
+            return;
+        }
+        self.death_saves.stable = false;
+        if damage >= self.max_health_total() {
+            self.death_saves.failures = 3;
+            return;
+        }
+        self.death_saves.failures += if critical { 2 } else { 1 };
+    }
+
+    #[must_use]
+    pub fn is_dead(&self) -> bool {
+        self.exhaustion >= 6 || self.death_saves.failures >= 3
+    }
+
+    pub fn reset_death_saves(&mut self) {
+        self.death_saves = Default::default();
+    }
+
+    // ---- exhaustion (Wiki/12 conditions.md) ----
+
+    /// Set exhaustion directly (house-rules seam); clamped to 6.
+    pub fn set_exhaustion(&mut self, level: u8) {
+        self.exhaustion = level.min(6);
+    }
+
+    /// Gain `n` levels of exhaustion; level 6 is death.
+    pub fn add_exhaustion(&mut self, n: u8) {
+        self.exhaustion = self.exhaustion.saturating_add(n).min(6);
+    }
+
+    /// Max hit points including exhaustion's level-4 halving.
+    #[must_use]
+    pub fn max_health_total(&self) -> i64 {
+        let m = self.modifiers();
+        if m.max_hp_halved {
+            self.health.max / 2
+        } else {
+            self.health.max
+        }
+    }
+
     /// Refresh `skills.proficiency_bonus` from the SRD table for the
     /// character's total level. Call after any level change; a manually
     /// set value is treated as a house-rules override until the next sync.
@@ -480,6 +708,9 @@ impl Character {
         self.classes
             .heal(class_index, roll, &mut self.health, &self.ability_scores);
         let healed = self.health.current - before;
+        if self.health.current > 0 {
+            self.death_saves = Default::default();
+        }
         (healed > 0).then_some(healed)
     }
 
@@ -497,6 +728,10 @@ impl Character {
     /// dice up to half your total (rounded up), and refill long-rest meters.
     pub fn long_rest(&mut self) {
         self.health.heal(self.health.max);
+        // SRD: finishing a long rest reduces exhaustion by 1
+        // (assuming food and drink; set `exhaustion` directly otherwise).
+        self.exhaustion = self.exhaustion.saturating_sub(1);
+        self.death_saves = Default::default();
         for c in &mut self.classes.classes {
             let spent = (c.max_healing_die - c.healing_die_remaining).max(0);
             let regained = spent.min((c.max_healing_die + 1) / 2);
@@ -546,6 +781,9 @@ impl Default for Character {
             conditions: Default::default(),
             feats: Vec::new(),
             traits: Vec::new(),
+            death_saves: Default::default(),
+            exhaustion: 0,
+            spell_slots_override: None,
         }
     }
 }
@@ -1226,5 +1464,201 @@ mod tests {
         assert!(sheet.auto_critical_against());
         sheet.remove_grant("unconscious");
         assert!(!sheet.auto_critical_against());
+    }
+
+    // ---- spell slots ----
+
+    fn leveled(class: ClassType, level: i64) -> Character {
+        Character::new(
+            "A".to_string(),
+            level,
+            HitPoints::new(30),
+            class,
+            AbilityScores::default(),
+        )
+    }
+
+    #[test]
+    fn test_spell_slots_full_caster() {
+        let sheet = leveled(ClassType::Cleric, 5);
+        assert_eq!(sheet.caster_level(), 5);
+        let slots = sheet.spell_slots();
+        assert_eq!(slots.get(&1), Some(&4));
+        assert_eq!(slots.get(&2), Some(&3));
+        assert_eq!(slots.get(&3), Some(&2));
+        assert_eq!(slots.get(&4), None);
+    }
+
+    #[test]
+    fn test_spell_slots_half_and_multiclass() {
+        // Paladin 5: half caster -> effective level 3.
+        let sheet = leveled(ClassType::Paladin, 5);
+        assert_eq!(sheet.caster_level(), 3);
+        assert_eq!(sheet.spell_slots().get(&2), Some(&2));
+        assert_eq!(sheet.spell_slots().get(&3), None);
+
+        // Wizard 3 + Paladin 3: 3 + ceil(3/2) = 5.
+        let mut sheet = leveled(ClassType::Wizard, 3);
+        sheet.classes.classes.push(Class {
+            level: Level(3),
+            hit_dice: ClassType::Paladin.get_hit_dice(),
+            health_bonus_per_level: 0,
+            class: ClassType::Paladin,
+            healing_die_remaining: 3,
+            subclass: String::new(),
+            max_healing_die: 3,
+        });
+        assert_eq!(sheet.caster_level(), 5);
+        assert_eq!(sheet.spell_slots().get(&3), Some(&2));
+    }
+
+    #[test]
+    fn test_spell_slots_sync_spend_rest() {
+        let mut sheet = leveled(ClassType::Cleric, 5);
+        sheet.sync_spell_slots();
+        assert_eq!(sheet.meters.meters["spell_slot_1"].slot_number, 4);
+        assert!(sheet.spend_spell_slot(1));
+        assert_eq!(sheet.meters.meters["spell_slot_1"].spent, 1);
+        assert!(sheet.spend_spell_slot(3));
+        // No 9th-level slots at level 5.
+        assert!(!sheet.spend_spell_slot(9));
+        sheet.long_rest();
+        assert_eq!(sheet.meters.meters["spell_slot_1"].spent, 0);
+        assert_eq!(sheet.meters.meters["spell_slot_3"].spent, 0);
+    }
+
+    #[test]
+    fn test_spell_slots_override_roundtrip() {
+        let mut sheet = leveled(ClassType::Cleric, 5);
+        // House rule: one 1st-level slot, nothing else.
+        sheet.spell_slots_override = Some(vec![1, 0, 0, 0, 0, 0, 0, 0, 0]);
+        sheet.sync_spell_slots();
+        assert_eq!(sheet.meters.meters["spell_slot_1"].slot_number, 1);
+        assert!(!sheet.meters.meters.contains_key("spell_slot_2"));
+        // Clearing the override restores the SRD table on next sync.
+        sheet.spell_slots_override = None;
+        sheet.sync_spell_slots();
+        assert_eq!(sheet.meters.meters["spell_slot_1"].slot_number, 4);
+        assert_eq!(sheet.meters.meters["spell_slot_2"].slot_number, 3);
+    }
+
+    #[test]
+    fn test_pact_magic_short_rest() {
+        let mut sheet = leveled(ClassType::Warlock, 5);
+        assert_eq!(sheet.pact_slots(), Some((2, 3)));
+        assert_eq!(sheet.caster_level(), 0); // Pact doesn't combine
+        sheet.sync_spell_slots();
+        let m = &sheet.meters.meters["pact_slot_3"];
+        assert_eq!(m.slot_number, 2);
+        assert!(m.restore.short_rest);
+        assert!(sheet.spend_spell_slot(3));
+        assert!(sheet.spend_spell_slot(3));
+        assert!(!sheet.spend_spell_slot(3));
+        sheet.short_rest();
+        assert_eq!(sheet.meters.meters["pact_slot_3"].spent, 0);
+    }
+
+    // ---- death saves ----
+
+    #[test]
+    fn test_damage_while_down() {
+        let mut sheet = leveled(ClassType::Fighter, 1);
+        sheet.health.current = 0;
+        sheet.damage_while_down(1, false);
+        assert_eq!(sheet.death_saves.failures, 1);
+        sheet.damage_while_down(1, true); // crit: two failures
+        assert_eq!(sheet.death_saves.failures, 3);
+        assert!(sheet.is_dead());
+
+        // Massive damage (>= max HP): instant death.
+        let mut sheet2 = leveled(ClassType::Fighter, 1);
+        sheet2.health.current = 0;
+        sheet2.damage_while_down(30, false);
+        assert!(sheet2.is_dead());
+    }
+
+    #[test]
+    fn test_death_saves_terminate() {
+        use crate::death::DeathSaveOutcome::*;
+        use rand::SeedableRng;
+        // Deterministic seeds: every run of saves must end in one of the
+        // terminal outcomes, and counts must stay SRD-consistent.
+        let mut saw_dead = false;
+        let mut saw_stable = false;
+        let mut saw_revived = false;
+        for seed in 0..40u64 {
+            let mut sheet = Character::default();
+            sheet.health.current = 0;
+            let mut rng = rand::rngs::StdRng::seed_from_u64(seed);
+            for _ in 0..40 {
+                let (r, o) = sheet.roll_death_save(&mut rng);
+                match o {
+                    Dead => {
+                        assert!(sheet.is_dead());
+                        saw_dead = true;
+                        break;
+                    }
+                    Stable => {
+                        assert!(sheet.death_saves.stable);
+                        saw_stable = true;
+                        break;
+                    }
+                    Revived => {
+                        assert_eq!(r.natural, Some(20));
+                        assert_eq!(sheet.health.current, 1);
+                        saw_revived = true;
+                        break;
+                    }
+                    Success | Failure => {
+                        assert!(sheet.death_saves.failures < 3);
+                        assert!(sheet.death_saves.successes < 3);
+                    }
+                }
+            }
+        }
+        assert!(saw_dead && saw_stable && saw_revived);
+    }
+
+    // ---- exhaustion ----
+
+    #[test]
+    fn test_exhaustion_srd_ladder() {
+        let mut sheet = leveled(ClassType::Fighter, 1); // max HP 30, speed 30
+        assert_eq!(sheet.speed_total(), 30);
+
+        sheet.set_exhaustion(1);
+        assert!(sheet.modifiers().check_disadvantage);
+        assert!(!sheet.modifiers().attack_disadvantage);
+
+        sheet.set_exhaustion(2);
+        assert_eq!(sheet.speed_total(), 15); // halved
+
+        sheet.set_exhaustion(3);
+        assert!(sheet.modifiers().attack_disadvantage);
+        assert!(sheet.modifiers().all_saves_disadvantaged);
+        assert_eq!(
+            sheet.modifiers().save_advantage(Score::Con),
+            crate::sheet::roll::Advantage::Disadvantage
+        );
+
+        sheet.set_exhaustion(4);
+        assert_eq!(sheet.max_health_total(), 15); // halved
+
+        sheet.set_exhaustion(5);
+        assert_eq!(sheet.speed_total(), 0);
+
+        sheet.set_exhaustion(6);
+        assert!(sheet.is_dead()); // level 6: death
+
+        // Long rest reduces by 1 (SRD, with food/drink assumed).
+        sheet.set_exhaustion(3);
+        sheet.long_rest();
+        assert_eq!(sheet.exhaustion, 2);
+
+        // add_exhaustion stacks and clamps at 6.
+        sheet.set_exhaustion(0);
+        sheet.add_exhaustion(2);
+        sheet.add_exhaustion(10);
+        assert_eq!(sheet.exhaustion, 6);
     }
 }
