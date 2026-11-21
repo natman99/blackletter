@@ -4,8 +4,4 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-anyhow = { workspace = true }
-blackletter_types = { workspace = true, features = ["schema", "serde", "rhai"] }
-serde = { workspace = true }
-serde_json = { workspace = true }
-log.workspace = true
+# Deps arrive with the GPUI scaffold (Task 0.3).

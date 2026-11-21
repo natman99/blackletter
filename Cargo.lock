@@ -742,13 +742,6 @@ dependencies = [
 [[package]]
 name = "blackletter"
 version = "0.1.0"
-dependencies = [
- "anyhow",
- "blackletter_types",
- "log",
- "serde",
- "serde_json",
-]
 
 [[package]]
 name = "blackletter_cli"
