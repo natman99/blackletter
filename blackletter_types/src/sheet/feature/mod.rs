@@ -11,6 +11,7 @@ use rhai::CustomType;
 use crate::{
     Score,
     condition::{Condition, ConditionKind},
+    damage::DamageType,
     meter::Meter,
     senses::Sense,
     sheet::source::{HasSource, Source},
@@ -74,6 +75,15 @@ pub enum Effect {
     SaveBonus { score: Score, bonus: i64 },
     /// The creature can't be subjected to this condition.
     ConditionImmunity(ConditionKind),
+    /// Resistant to a damage type (half damage).
+    Resistance(DamageType),
+    /// Immune to a damage type (no damage).
+    Immunity(DamageType),
+    /// Vulnerable to a damage type (double damage).
+    Vulnerability(DamageType),
+    /// Resistance to bludgeoning, piercing, and slashing from nonmagical
+    /// attacks (the common SRD trait).
+    NonmagicalWeaponResistance,
     /// Homebrew effect with no mechanical interpretation; shown, not computed.
     Custom(String),
 }
@@ -98,6 +108,12 @@ impl Display for Effect {
             Effect::SkillBonus { skill, bonus } => format!("{skill} {bonus:+}"),
             Effect::SaveBonus { score, bonus } => format!("{score} save {bonus:+}"),
             Effect::ConditionImmunity(kind) => format!("Immune to {kind}"),
+            Effect::Resistance(kind) => format!("Resistant to {kind:?}"),
+            Effect::Immunity(kind) => format!("Immune to {kind:?}"),
+            Effect::Vulnerability(kind) => format!("Vulnerable to {kind:?}"),
+            Effect::NonmagicalWeaponResistance => {
+                "Resistant to nonmagical weapon damage".to_string()
+            }
             Effect::Custom(s) => s.clone(),
         };
         write!(f, "{}", s)

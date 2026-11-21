@@ -13,6 +13,7 @@
 use crate::{
     Score,
     condition::{Condition, ConditionKind},
+    damage::{DamageType, ResistanceState},
     feat::Feat,
     feature::{Effect, Feature},
     meter::Meter,
@@ -127,6 +128,16 @@ pub struct Modifiers {
     pub speed_halved: bool,
     pub all_saves_disadvantaged: bool,
     pub max_hp_halved: bool,
+
+    /// Damage resistances/immunities/vulnerabilities from active grants.
+    pub resistances: Vec<DamageType>,
+    pub immunities: Vec<DamageType>,
+    pub vulnerabilities: Vec<DamageType>,
+    /// Resistance to bludgeoning/piercing/slashing from nonmagical attacks
+    /// (the common SRD trait).
+    pub nonmagical_weapon_resistance: bool,
+    /// Resistance to ALL damage types (e.g. Petrified).
+    pub all_damage_resistant: bool,
 }
 
 impl Modifiers {
@@ -155,6 +166,12 @@ impl Modifiers {
                     self.condition_immunities.push(kind.clone());
                 }
                 Effect::Condition(c) => self.condition_kinds.push(c.kind.clone()),
+                Effect::Resistance(kind) => self.resistances.push(*kind),
+                Effect::Immunity(kind) => self.immunities.push(*kind),
+                Effect::Vulnerability(kind) => self.vulnerabilities.push(*kind),
+                Effect::NonmagicalWeaponResistance => {
+                    self.nonmagical_weapon_resistance = true;
+                }
                 // Not computable: health-per-level is tracked on HitPoints,
                 // Custom is display-only.
                 Effect::HealthBonusPerLevel(_) | Effect::Custom(_) => {}
@@ -204,6 +221,36 @@ impl Modifiers {
         }
         if self.exhaustion_level >= 5 {
             self.speed_zero = true;
+        }
+
+        // Petrified (Wiki/12 conditions.md): resistant to all damage,
+        // immune to poison.
+        if self.condition_kinds.contains(&ConditionKind::Petrified) {
+            self.all_damage_resistant = true;
+            if !self.immunities.contains(&DamageType::Poison) {
+                self.immunities.push(DamageType::Poison);
+            }
+        }
+    }
+
+    /// How the character takes a damage type. `magical` says whether the
+    /// source is magical (relevant to nonmagical-weapon resistance).
+    /// SRD: resistances don't stack; immunity wins; resistance +
+    /// vulnerability cancel out.
+    #[must_use]
+    pub fn resistance_state(&self, kind: DamageType, magical: bool) -> ResistanceState {
+        if self.immunities.contains(&kind) {
+            return ResistanceState::Immune;
+        }
+        let resistant = self.all_damage_resistant
+            || self.resistances.contains(&kind)
+            || (self.nonmagical_weapon_resistance && !magical && kind.is_weapon_damage());
+        let vulnerable = self.vulnerabilities.contains(&kind);
+        match (resistant, vulnerable) {
+            (true, true) => ResistanceState::Normal,
+            (true, false) => ResistanceState::Resistant,
+            (false, true) => ResistanceState::Vulnerable,
+            (false, false) => ResistanceState::Normal,
         }
     }
 

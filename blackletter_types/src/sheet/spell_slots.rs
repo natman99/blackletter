@@ -49,10 +49,11 @@ const FULL_CASTER_TABLE: [[i64; 9]; 20] = [
 ];
 
 /// Pact Magic (Warlock): `PACT_TABLE[level-1] = (slot_count, slot_level)`.
-/// Values from Wiki/02 classes.md (the SRD table). NOTE: the free SRD table
-/// has a known transcription quirk at 17th-20th (5th/8th slot levels); the
-/// printed PHB shows 4 slots of 9th level there. The vault SRD is this
-/// project's source of truth; override via meters if your table differs.
+/// PHB values. NOTE: the free SRD (and the vault's copy) has a known
+/// transcription bug in the Slot Level column (it shows 5th/8th at high
+/// levels and misaligns 12th-16th); the printed PHB is 3x5th at 11th-12th,
+/// 3x6th at 13th-14th, 3x7th at 15th-16th, 4x9th at 17th-20th. PHB values
+/// encoded here; `spell_slots_override` covers any other table.
 const PACT_TABLE: [(i64, i64); 20] = [
     (1, 1),
     (2, 1),
@@ -65,15 +66,15 @@ const PACT_TABLE: [(i64, i64); 20] = [
     (2, 5),
     (2, 5),
     (3, 5),
-    (3, 6),
+    (3, 5),
     (3, 6),
     (3, 6),
     (3, 7),
     (3, 7),
-    (4, 5),
-    (4, 8),
-    (4, 8),
-    (4, 8),
+    (4, 9),
+    (4, 9),
+    (4, 9),
+    (4, 9),
 ];
 
 /// Slots for a given effective caster level (1..=20): spell level -> count.
@@ -119,14 +120,17 @@ mod tests {
     }
 
     #[test]
-    fn pact_magic_table_srd() {
-        // Wiki/02 classes.md warlock rows.
+    fn pact_magic_table_phb() {
+        // PHB values (the SRD/vault Slot Level column is buggy).
         assert_eq!(pact_magic(1), Some((1, 1)));
         assert_eq!(pact_magic(3), Some((2, 2)));
         assert_eq!(pact_magic(9), Some((2, 5)));
         assert_eq!(pact_magic(11), Some((3, 5)));
+        assert_eq!(pact_magic(12), Some((3, 5)));
+        assert_eq!(pact_magic(13), Some((3, 6)));
         assert_eq!(pact_magic(15), Some((3, 7)));
-        assert_eq!(pact_magic(20), Some((4, 8)));
+        assert_eq!(pact_magic(17), Some((4, 9)));
+        assert_eq!(pact_magic(20), Some((4, 9)));
         assert_eq!(pact_magic(0), None);
     }
 }

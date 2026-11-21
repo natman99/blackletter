@@ -682,6 +682,29 @@ impl Character {
         self.exhaustion = self.exhaustion.saturating_add(n).min(6);
     }
 
+    /// How this character takes `kind` damage from a source that is
+    /// `magical` or not.
+    #[must_use]
+    pub fn resistance_state(
+        &self,
+        kind: crate::damage::DamageType,
+        magical: bool,
+    ) -> crate::damage::ResistanceState {
+        self.modifiers().resistance_state(kind, magical)
+    }
+
+    /// Reduce/double incoming damage per resistances (PHB 2014: half
+    /// rounded down, double if vulnerable, zero if immune).
+    #[must_use]
+    pub fn apply_resistance(
+        &self,
+        kind: crate::damage::DamageType,
+        magical: bool,
+        amount: i64,
+    ) -> i64 {
+        self.resistance_state(kind, magical).apply(amount)
+    }
+
     /// Max hit points including exhaustion's level-4 halving.
     #[must_use]
     pub fn max_health_total(&self) -> i64 {
@@ -1074,6 +1097,7 @@ impl Display for WalkingSpeed {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::feature::{Effect, Feature};
     use crate::meter::{Meter, RestoreTime};
     use std::str::FromStr;
 
@@ -1660,5 +1684,100 @@ mod tests {
         sheet.add_exhaustion(2);
         sheet.add_exhaustion(10);
         assert_eq!(sheet.exhaustion, 6);
+    }
+
+    // ---- damage resistances ----
+
+    use crate::damage::{DamageType, ResistanceState};
+
+    fn res_feat(name: &str, effects: Vec<Effect>) -> Feat {
+        Feat {
+            name: name.to_string(),
+            desc: String::new(),
+            feature: Some(Feature {
+                name: name.to_string(),
+                effects,
+                ..Feature::default()
+            }),
+            source: None,
+        }
+    }
+
+    #[test]
+    fn test_resistance_grant_remove_lossless() {
+        let mut sheet = Character::default();
+        assert_eq!(sheet.apply_resistance(DamageType::Fire, true, 11), 11);
+        sheet.add_feat(res_feat(
+            "Fire Resistance",
+            vec![Effect::Resistance(DamageType::Fire)],
+        ));
+        assert_eq!(
+            sheet.resistance_state(DamageType::Fire, true),
+            ResistanceState::Resistant
+        );
+        assert_eq!(sheet.apply_resistance(DamageType::Fire, true, 11), 5); // halved, floor
+        assert_eq!(sheet.apply_resistance(DamageType::Cold, true, 11), 11);
+        sheet.remove_grant("fire resistance");
+        assert_eq!(sheet.apply_resistance(DamageType::Fire, true, 11), 11);
+    }
+
+    #[test]
+    fn test_immunity_and_vulnerability() {
+        let mut sheet = Character::default();
+        sheet.add_feat(res_feat(
+            "Bait",
+            vec![
+                Effect::Immunity(DamageType::Poison),
+                Effect::Vulnerability(DamageType::Radiant),
+            ],
+        ));
+        assert_eq!(sheet.apply_resistance(DamageType::Poison, false, 20), 0);
+        assert_eq!(sheet.apply_resistance(DamageType::Radiant, false, 7), 14);
+    }
+
+    #[test]
+    fn test_nonmagical_weapon_resistance() {
+        let mut sheet = Character::default();
+        sheet.add_feat(res_feat(
+            "Werewolf-ish",
+            vec![Effect::NonmagicalWeaponResistance],
+        ));
+        assert_eq!(sheet.apply_resistance(DamageType::Slashing, false, 9), 4); // nonmagical
+        assert_eq!(sheet.apply_resistance(DamageType::Slashing, true, 9), 9); // magical: full
+        assert_eq!(sheet.apply_resistance(DamageType::Fire, false, 9), 9); // not weapon damage
+    }
+
+    #[test]
+    fn test_petrified_resists_all_damage() {
+        let mut sheet = Character::default();
+        sheet.add_condition(Condition::new("Petrified", -1));
+        assert_eq!(
+            sheet.resistance_state(DamageType::Acid, true),
+            ResistanceState::Resistant
+        );
+        assert_eq!(sheet.apply_resistance(DamageType::Acid, true, 8), 4);
+        assert_eq!(
+            sheet.resistance_state(DamageType::Poison, false),
+            ResistanceState::Immune
+        );
+        sheet.remove_grant("petrified");
+        assert_eq!(sheet.apply_resistance(DamageType::Acid, true, 8), 8);
+    }
+
+    #[test]
+    fn test_resistance_and_vulnerability_cancel() {
+        let mut sheet = Character::default();
+        sheet.add_feat(res_feat(
+            "Mixed",
+            vec![
+                Effect::Resistance(DamageType::Fire),
+                Effect::Vulnerability(DamageType::Fire),
+            ],
+        ));
+        assert_eq!(
+            sheet.resistance_state(DamageType::Fire, true),
+            ResistanceState::Normal
+        );
+        assert_eq!(sheet.apply_resistance(DamageType::Fire, true, 10), 10);
     }
 }
