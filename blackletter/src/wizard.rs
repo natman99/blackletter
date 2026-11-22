@@ -21,7 +21,10 @@ use blackletter_types::{
     class::Class,
     database::corpus::Corpus,
     library::Library,
-    sheet::{background::Background, race::Race, skills::Skill, source::Source, traits::Trait},
+    sheet::{
+        background::Background, race::Race, skills::Skill, source::Source, spells::Spell,
+        traits::Trait,
+    },
 };
 use gpui::{
     App, Context, Entity, FocusHandle, Focusable, KeyBinding, Render, SharedString, Window,
@@ -54,6 +57,9 @@ pub fn wizard_keys() -> Vec<KeyBinding> {
     let kb = vec![
         KeyBinding::new("enter", WizardNext, ctx),
         KeyBinding::new("shift-enter", WizardBack, ctx),
+        // [ / ] walk steps, matching the sheet's section nav.
+        KeyBinding::new("[", WizardBack, ctx),
+        KeyBinding::new("]", WizardNext, ctx),
         KeyBinding::new("up", WizardUp, ctx),
         KeyBinding::new("down", WizardDown, ctx),
         // hjkl mirrors the arrows everywhere in the wizard (the rest of
@@ -92,7 +98,34 @@ enum Step {
     /// One prompt per class option (equipment alternatives, then skill
     /// choices); the payload is the option's index in `pending_options`.
     Choice(usize),
+    /// Starting-spells prompts driven by the class's level-1 row
+    /// (cantrips_known / spells_known; the wizard's spellbook six is
+    /// prose-only and special-cased in `spell_prompts`).
+    SpellChoice(SpellPrompt),
     Confirm,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpellPrompt {
+    Cantrips,
+    Known,
+}
+
+impl SpellPrompt {
+    fn label(self) -> &'static str {
+        match self {
+            SpellPrompt::Cantrips => "cantrip",
+            SpellPrompt::Known => "spell",
+        }
+    }
+
+    /// Spell level the prompt draws from (0 = cantrips).
+    fn spell_level(self) -> i64 {
+        match self {
+            SpellPrompt::Cantrips => 0,
+            SpellPrompt::Known => 1,
+        }
+    }
 }
 
 impl Step {
@@ -105,6 +138,8 @@ impl Step {
             Step::Background => "background",
             Step::Scores => "ability scores",
             Step::Choice(_) => "starting choices",
+            Step::SpellChoice(SpellPrompt::Cantrips) => "cantrips",
+            Step::SpellChoice(SpellPrompt::Known) => "spells",
             Step::Confirm => "confirm",
         }
     }
@@ -122,6 +157,37 @@ pub struct Draft {
     scores: [Option<i64>; 6],
     /// Per pending option: the chosen candidate indexes.
     choices: Vec<Vec<usize>>,
+    /// Spell indexes chosen for the starting-spell prompts.
+    cantrips: Vec<String>,
+    known: Vec<String>,
+}
+
+/// The starting-spell prompts a class owes at level 1: (prompt, count).
+/// Known-caster counts come from the Levels row; the wizard's spellbook
+/// six is SRD prose ("a spellbook containing six 1st-level wizard
+/// spells"), not a column, so it is special-cased. Full-list prepared
+/// casters (cleric/druid) get no prompt — `build_character` grants their
+/// whole 1st-level list per the 2014 prepared rule.
+fn spell_prompts(corpus: &Corpus, class_index: &str) -> Vec<(SpellPrompt, usize)> {
+    let Some(row) = corpus.level_row(class_index, 1) else {
+        return Vec::new();
+    };
+    let Some(sc) = row.spellcasting.as_ref() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    if let Some(n) = sc.cantrips_known.filter(|n| *n > 0) {
+        out.push((SpellPrompt::Cantrips, n as usize));
+    }
+    let known = match sc.spells_known.filter(|n| *n > 0) {
+        Some(n) => Some(n as usize),
+        None if class_index == "wizard" => Some(6),
+        None => None,
+    };
+    if let Some(n) = known {
+        out.push((SpellPrompt::Known, n));
+    }
+    out
 }
 
 pub enum WizardOutcome {
@@ -220,6 +286,11 @@ impl WizardView {
         for i in 0..self.pending_options().len() {
             steps.push(Step::Choice(i));
         }
+        if let Some(ci) = self.draft.class.as_deref() {
+            for (p, _) in spell_prompts(self.corpus.as_ref(), ci) {
+                steps.push(Step::SpellChoice(p));
+            }
+        }
         steps.push(Step::Confirm);
         self.steps = steps;
     }
@@ -271,7 +342,8 @@ impl WizardView {
                     None => self.say("choose", cx),
                 }
             }
-            Step::Confirm => self.say("enter creates the character · shift-enter edits", cx),
+            Step::SpellChoice(p) => self.open_spell_picker(p, window, cx),
+            Step::Confirm => self.say("enter creates the character · [ walks back to edit", cx),
             Step::Name => self.say("start with a name — enter continues", cx),
         }
     }
@@ -305,6 +377,51 @@ impl WizardView {
         cx.notify();
     }
 
+    /// Spell pickers are searchable one-pick-at-a-time: the class spell
+    /// list is too long for the inline toggle list, and the picker's
+    /// filter is the fastest way through 200+ rows. Already-chosen
+    /// spells are excluded, and the picker reopens until the count is
+    /// met.
+    fn open_spell_picker(
+        &mut self,
+        prompt: SpellPrompt,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(ci) = self.draft.class.clone() else {
+            return;
+        };
+        let chosen: &[String] = match prompt {
+            SpellPrompt::Cantrips => &self.draft.cantrips,
+            SpellPrompt::Known => &self.draft.known,
+        };
+        let need = spell_prompts(self.corpus.as_ref(), &ci)
+            .into_iter()
+            .find(|(p, _)| *p == prompt)
+            .map(|(_, n)| n)
+            .unwrap_or(0);
+        let allowed: Vec<String> = self
+            .corpus
+            .class_spell_list(&ci, prompt.spell_level())
+            .iter()
+            .map(|sp| sp.index.clone())
+            .filter(|idx| !chosen.contains(idx))
+            .collect();
+        self.say(
+            format!(
+                "choose {} {}s — {} of {need} picked · type to search, enter picks",
+                need,
+                prompt.label(),
+                chosen.len()
+            ),
+            cx,
+        );
+        self.open_picker(PickKind::Spell, window, cx);
+        if let Some(picker) = self.picker.clone() {
+            picker.update(cx, |p, _| p.restrict(&allowed));
+        }
+    }
+
     fn on_pick(
         &mut self,
         kind: PickKind,
@@ -334,6 +451,8 @@ impl WizardView {
                 PickKind::Class => {
                     self.draft.class = Some(index);
                     self.draft.choices = vec![Vec::new(); self.pending_options().len()];
+                    self.draft.cantrips.clear();
+                    self.draft.known.clear();
                     self.rebuild_steps();
                     self.say("class chosen", cx);
                     self.advance(window, cx);
@@ -342,6 +461,35 @@ impl WizardView {
                     self.draft.background = Some(index);
                     self.say("background chosen", cx);
                     self.advance(window, cx);
+                }
+                PickKind::Spell => {
+                    let Step::SpellChoice(p) = self.step() else {
+                        self.say("that pick does not belong here", cx);
+                        return;
+                    };
+                    match p {
+                        SpellPrompt::Cantrips => self.draft.cantrips.push(index),
+                        SpellPrompt::Known => self.draft.known.push(index),
+                    }
+                    let Some(ci) = self.draft.class.clone() else {
+                        return;
+                    };
+                    let need = spell_prompts(self.corpus.as_ref(), &ci)
+                        .into_iter()
+                        .find(|(q, _)| *q == p)
+                        .map(|(_, n)| n)
+                        .unwrap_or(0);
+                    let have = match p {
+                        SpellPrompt::Cantrips => self.draft.cantrips.len(),
+                        SpellPrompt::Known => self.draft.known.len(),
+                    };
+                    if have >= need {
+                        self.say(format!("{}s chosen", p.label()), cx);
+                        self.advance(window, cx);
+                    } else {
+                        // Reopen for the next pick, minus what's taken.
+                        self.open_spell_picker(p, window, cx);
+                    }
                 }
                 _ => self.say("that pick does not belong here", cx),
             },
@@ -460,7 +608,58 @@ impl WizardView {
 
     // ---- finish ----
 
+    /// Everything the draft still owes before confirm (the confirm step
+    /// lists these and finish refuses until they are all filled).
+    fn missing(&self) -> Vec<String> {
+        let mut m = Vec::new();
+        if self.draft.name.trim().is_empty() {
+            m.push("name".into());
+        }
+        if self.draft.race.is_none() {
+            m.push("race".into());
+        }
+        if self.steps.contains(&Step::Subrace) && self.draft.subrace.is_none() {
+            m.push("subrace".into());
+        }
+        if self.draft.class.is_none() {
+            m.push("class".into());
+        }
+        if self.draft.background.is_none() {
+            m.push("background".into());
+        }
+        if self.draft.scores.iter().any(Option::is_none) {
+            m.push("all six ability scores".into());
+        }
+        for (i, opt) in self.pending_options().iter().enumerate() {
+            let have = self.draft.choices.get(i).map(Vec::len).unwrap_or(0);
+            let need = usize::try_from(opt.choose).unwrap_or(0);
+            if have != need {
+                m.push(format!("{} ({have}/{need})", opt.desc));
+            }
+        }
+        if let Some(ci) = self.draft.class.as_deref() {
+            for (p, n) in spell_prompts(self.corpus.as_ref(), ci) {
+                let have = match p {
+                    SpellPrompt::Cantrips => self.draft.cantrips.len(),
+                    SpellPrompt::Known => self.draft.known.len(),
+                };
+                if have != n {
+                    m.push(format!("{}s ({have}/{n})", p.label()));
+                }
+            }
+        }
+        m
+    }
+
     fn finish(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let missing = self.missing();
+        if !missing.is_empty() {
+            self.say(
+                format!("cannot create yet — still needed: {}", missing.join(", ")),
+                cx,
+            );
+            return;
+        }
         let outcome = match build_character(&self.corpus, &self.draft) {
             Ok(c) => WizardOutcome::Finished(Box::new(c)),
             Err(e) => {
@@ -631,6 +830,65 @@ pub fn build_character(corpus: &Corpus, draft: &Draft) -> anyhow::Result<Charact
                 item.quantity = cand.quantity.max(1) as i32;
                 c.inventory.0.insert(item.name.clone(), item);
             }
+        }
+    }
+
+    // Every class option prompt must be fully answered — the confirm
+    // step gates on the same check; belt and braces for direct callers.
+    for (i, opt) in class_db.starting_equipment_options.iter().enumerate() {
+        let idx = choice_index_for(class_db, i, false);
+        let have = draft.choices.get(idx).map(Vec::len).unwrap_or(0);
+        let need = usize::try_from(opt.choose).unwrap_or(0);
+        anyhow::ensure!(
+            have == need,
+            "unanswered choice: {} ({have}/{need})",
+            opt.desc
+        );
+    }
+    for (i, opt) in class_db.proficiency_choices.iter().enumerate() {
+        let idx = choice_index_for(class_db, i, true);
+        let have = draft.choices.get(idx).map(Vec::len).unwrap_or(0);
+        let need = usize::try_from(opt.choose).unwrap_or(0);
+        anyhow::ensure!(
+            have == need,
+            "unanswered choice: {} ({have}/{need})",
+            opt.desc
+        );
+    }
+
+    // Starting spells (plan Task 5.1). Cantrips are always prepared;
+    // known-caster picks land known-and-prepared; the wizard's picks go
+    // into the spellbook unprepared (they prepare from it after a long
+    // rest, SRD "Preparing and Casting Spells").
+    for (p, n) in spell_prompts(corpus, ci) {
+        let picked: &[String] = match p {
+            SpellPrompt::Cantrips => &draft.cantrips,
+            SpellPrompt::Known => &draft.known,
+        };
+        anyhow::ensure!(
+            picked.len() == n,
+            "incomplete {} selection ({}/{n})",
+            p.label(),
+            picked.len()
+        );
+        let prepared = match p {
+            SpellPrompt::Cantrips => true,
+            SpellPrompt::Known => ci != "wizard",
+        };
+        for si in picked {
+            let db = corpus.spell(si).ctx_missing("spell", si)?;
+            let mut sp = Spell::try_from_database(db.clone(), &c)?;
+            sp.prepared = prepared;
+            c.spells.spells.insert(sp.name.clone(), sp);
+        }
+    }
+    // Full-list prepared casters (2014 cleric/druid): the whole
+    // 1st-level class list lands prepared, no choice step.
+    if matches!(ci, "cleric" | "druid") {
+        for db in corpus.class_spell_list(ci, 1) {
+            let mut sp = Spell::try_from_database(db.clone(), &c)?;
+            sp.prepared = true;
+            c.spells.spells.insert(sp.name.clone(), sp);
         }
     }
 
@@ -810,6 +1068,23 @@ impl Render for WizardView {
                         .w(gpui::px(360.))
                         .child(FieldElement::new(cx.entity())),
                 ),
+            Step::SpellChoice(p) => {
+                if picker_open {
+                    div().child("")
+                } else {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_2()
+                        .child(format!("Pick {}s.", p.label()))
+                        .child(
+                            div()
+                                .text_sm()
+                                .text_color(gpui::rgb(0x8a_90_b0))
+                                .child("enter reopens the picker"),
+                        )
+                }
+            }
             Step::Race | Step::Subrace | Step::Class | Step::Background => {
                 if picker_open {
                     div().child("")
@@ -923,11 +1198,25 @@ impl Render for WizardView {
             }
             Step::Confirm => {
                 let lines = summary(&self.corpus, &self.draft);
+                let missing = self.missing();
+                let gate = if missing.is_empty() {
+                    div()
+                } else {
+                    div()
+                        .text_sm()
+                        .text_color(gpui::rgb(0xf3_8b_a8))
+                        .child(format!("still needed: {}", missing.join(" · ")))
+                };
                 div()
                     .flex()
                     .flex_col()
                     .gap_1()
-                    .child(div().text_lg().child("Ready"))
+                    .child(div().text_lg().child(if missing.is_empty() {
+                        "Ready"
+                    } else {
+                        "Not ready yet"
+                    }))
+                    .child(gate)
                     .child(
                         div()
                             .flex()
@@ -998,6 +1287,11 @@ impl Render for WizardView {
                         }
                     }
                     Step::Confirm => this.finish(window, cx),
+                    Step::SpellChoice(p) => {
+                        if this.picker.is_none() {
+                            this.open_spell_picker(p, window, cx);
+                        }
+                    }
                     Step::Race | Step::Subrace | Step::Class | Step::Background => {
                         if this.picker.is_none() {
                             let kind = match this.step() {
@@ -1171,7 +1465,52 @@ mod tests {
         // focus, scholar/explorer pack) then the skill choice: pick
         // Arcana + History there.
         d.choices = vec![vec![0], vec![0], vec![0], vec![0, 1]];
+        d.cantrips = vec!["fire-bolt".into(), "light".into(), "mage-hand".into()];
+        d.known = vec![
+            "magic-missile".into(),
+            "shield".into(),
+            "detect-magic".into(),
+            "burning-hands".into(),
+            "charm-person".into(),
+            "feather-fall".into(),
+        ];
         d
+    }
+
+    #[test]
+    fn confirm_refuses_a_draft_with_holes() {
+        // Engine-side gate mirrors the confirm step's: every prompt
+        // answered or build_character refuses.
+        let mut d = wizard_draft();
+        d.known.pop();
+        let e = build_character(&test_corpus(), &d).expect_err("six spellbook spells required");
+        assert!(e.to_string().contains("spell selection"), "{e}");
+        let mut d = wizard_draft();
+        d.choices[3] = vec![0];
+        let e = build_character(&test_corpus(), &d).expect_err("two skill picks required");
+        assert!(e.to_string().contains("unanswered choice"), "{e}");
+    }
+
+    #[test]
+    fn spell_prompts_follow_the_levels_rows() {
+        let c = test_corpus();
+        assert_eq!(
+            spell_prompts(&c, "wizard"),
+            vec![(SpellPrompt::Cantrips, 3), (SpellPrompt::Known, 6)]
+        );
+        assert_eq!(
+            spell_prompts(&c, "sorcerer"),
+            vec![(SpellPrompt::Cantrips, 4), (SpellPrompt::Known, 2)]
+        );
+        assert_eq!(
+            spell_prompts(&c, "cleric"),
+            vec![(SpellPrompt::Cantrips, 3)]
+        );
+        assert!(spell_prompts(&c, "fighter").is_empty());
+        assert!(
+            spell_prompts(&c, "ranger").is_empty(),
+            "rangers cast at 2nd"
+        );
     }
 
     #[test]
@@ -1209,6 +1548,23 @@ mod tests {
         assert_eq!(c.gold, 15);
         // Spell slots exist for a level-1 full caster.
         assert!(c.meters.meters.contains_key("spell_slot_1"));
+        // Starting spells: 3 cantrips prepared + 6 spellbook entries
+        // unprepared (the wizard prepares from the spellbook).
+        assert_eq!(
+            c.spells.spells.len(),
+            9,
+            "spellbook: {:?}",
+            c.spells.spells.keys()
+        );
+        assert!(
+            c.spells.spells["Fire Bolt"].prepared,
+            "cantrips stay prepared"
+        );
+        assert_eq!(c.spells.spells["Fire Bolt"].level, 0);
+        assert!(
+            !c.spells.spells["Magic Missile"].prepared,
+            "spellbook entries start unprepared"
+        );
     }
 
     /// Drives the wizard exactly like the live check: open via
@@ -1320,6 +1676,39 @@ mod tests {
             vec![1],
             "space toggled candidate 1"
         );
+
+        // Remaining equipment prompts (1 each), then the skill choice
+        // (2 of 5).
+        cx.simulate_keystrokes(window.into(), "space enter space enter");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "space j space enter");
+        cx.run_until_parked();
+        assert_eq!(
+            wiz.read_with(cx, |w, _| w.step()),
+            Step::SpellChoice(SpellPrompt::Cantrips)
+        );
+
+        // Cantrip picker (3 picks, one searchable picker per pick).
+        cx.simulate_keystrokes(window.into(), "f i r e enter l i g h t enter m a g e enter");
+        cx.run_until_parked();
+        assert_eq!(
+            wiz.read_with(cx, |w, _| w.step()),
+            Step::SpellChoice(SpellPrompt::Known)
+        );
+
+        // Spellbook picker (wizard's six 1st-level spells).
+        cx.simulate_keystrokes(
+            window.into(),
+            "m a g i c enter s h i e l d enter d e t e c t enter              b u r n i n g enter c h a r m enter f e a t h e r enter",
+        );
+        cx.run_until_parked();
+        assert_eq!(wiz.read_with(cx, |w, _| w.step()), Step::Confirm);
+
+        // Confirm creates: the wizard hands the character to the root.
+        cx.simulate_keystrokes(window.into(), "enter");
+        cx.run_until_parked();
+        let gone = root.read_with(cx, |r, _| r.wizard().is_none());
+        assert!(gone, "wizard closed after confirm");
     }
 
     #[test]

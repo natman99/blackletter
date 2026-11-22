@@ -214,6 +214,26 @@ impl Corpus {
             .collect()
     }
 
+    /// The class's own level row at a level (subclass rows excluded) —
+    /// source of the per-level `cantrips_known` / `spells_known` counts
+    /// the creation wizard's spell steps drive (plan Task 5.1).
+    #[must_use]
+    pub fn level_row(&self, class_index: &str, level: i32) -> Option<&DatabaseLevel> {
+        self.levels
+            .iter()
+            .find(|l| l.class.index == class_index && l.subclass.is_none() && l.level == level)
+    }
+
+    /// The class's spell list at a spell level (0 = cantrips). Drives the
+    /// wizard's starting-spell pickers (plan Task 5.1).
+    #[must_use]
+    pub fn class_spell_list(&self, class_index: &str, spell_level: i64) -> Vec<&DatabaseSpell> {
+        self.spells
+            .iter()
+            .filter(|s| s.level == spell_level && s.classes.iter().any(|c| c.index == class_index))
+            .collect()
+    }
+
     /// The level rows for a class (optionally narrowed to a subclass),
     /// sorted by level.
     #[must_use]
@@ -274,6 +294,30 @@ mod tests {
         assert!(c.classes.iter().any(|k| k.index == "sorcerer"));
         assert!(c.item("club").is_some());
         assert!(c.spell("fireball").is_some());
+    }
+
+    #[test]
+    fn level_row_and_class_spell_list_drive_the_wizard_spell_steps() {
+        let c = corpus();
+        let row = c.level_row("wizard", 1).expect("wizard level-1 row");
+        let sc = row.spellcasting.as_ref().expect("wizard spellcasting");
+        assert_eq!(sc.cantrips_known, Some(3));
+        // The wizard's spellbook count is prose-only (SRD Spellbook
+        // section), so the Levels row carries no spells_known column.
+        assert_eq!(sc.spells_known, None);
+        assert_eq!(c.class_spell_list("wizard", 0).len(), 14, "wizard cantrips");
+        assert_eq!(
+            c.class_spell_list("wizard", 1).len(),
+            27,
+            "1st-level wizard spells"
+        );
+        assert!(c.class_spell_list("wizard", 9).iter().all(|s| s.level == 9));
+        let sorc = c.level_row("sorcerer", 1).expect("sorcerer row");
+        assert_eq!(
+            sorc.spellcasting.as_ref().and_then(|s| s.spells_known),
+            Some(2),
+            "known casters carry machine-readable counts"
+        );
     }
 
     #[test]
