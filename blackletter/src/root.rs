@@ -197,6 +197,11 @@ impl RootView {
         view
     }
 
+    #[cfg(test)]
+    pub fn wizard(&self) -> Option<&Entity<crate::wizard::WizardView>> {
+        self.wizard.as_ref()
+    }
+
     /// Open the new-character wizard (ctrl-shift-n).
     fn on_new_character(&mut self, _: &NewCharacter, window: &mut Window, cx: &mut Context<Self>) {
         let Some(corpus) = self.corpus.clone() else {

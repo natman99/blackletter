@@ -43,6 +43,7 @@ actions!(
         WizardToggle,
         WizardCycleDown,
         WizardCycleUp,
+        WizardClearScore,
         WizardCancel
     ]
 );
@@ -58,6 +59,7 @@ pub fn wizard_keys() -> Vec<KeyBinding> {
         KeyBinding::new("space", WizardToggle, ctx),
         KeyBinding::new("left", WizardCycleDown, ctx),
         KeyBinding::new("right", WizardCycleUp, ctx),
+        KeyBinding::new("backspace", WizardClearScore, ctx),
         KeyBinding::new("escape", WizardCancel, ctx),
     ];
     // NOTE: deliberately no field_keys(WIZARD_CTX) here — the name step
@@ -250,7 +252,7 @@ impl WizardView {
             Step::Subrace => self.open_picker(PickKind::Subrace, window, cx),
             Step::Class => self.open_picker(PickKind::Class, window, cx),
             Step::Background => self.open_picker(PickKind::Background, window, cx),
-            Step::Scores => self.say("↑/↓ pick an ability · ←/→ cycle the standard array", cx),
+            Step::Scores => self.say("↑/↓ pick · ←/→ cycle the array · backspace clears", cx),
             Step::Choice(i) => {
                 let opts = self.pending_options();
                 match opts.get(i) {
@@ -337,16 +339,21 @@ impl WizardView {
 
     // ---- scores step ----
 
-    fn score_pool(&self, except_row: usize) -> Vec<i64> {
+    /// The unassigned values of the standard array. The selected row's
+    /// own value counts as assigned: `cycle_score` re-adds it exactly
+    /// once, so leaving it in the pool too would duplicate it and
+    /// right-arrow would cycle the value onto itself forever (live-check
+    /// finding: right arrow "does nothing" after any assignment).
+    fn score_pool(&self) -> Vec<i64> {
         let mut pool: Vec<i64> = STANDARD_ARRAY.to_vec();
-        for (i, v) in self.draft.scores.iter().enumerate() {
-            if i != except_row
-                && let Some(v) = *v
+        for v in self.draft.scores.iter() {
+            if let Some(v) = *v
                 && let Some(p) = pool.iter().position(|x| *x == v)
             {
                 pool.remove(p);
             }
         }
+        pool.sort_unstable();
         pool
     }
 
@@ -356,7 +363,7 @@ impl WizardView {
         }
         let row = self.sel;
         // The cycle list is the free pool plus the row's own current value.
-        let mut values = self.score_pool(row);
+        let mut values = self.score_pool();
         if let Some(cur) = self.draft.scores[row] {
             values.push(cur);
             values.sort_unstable();
@@ -374,7 +381,7 @@ impl WizardView {
                 "{} = {} · pool: {}",
                 Score::ALL_STR[row].to_uppercase(),
                 values[next],
-                self.score_pool(row)
+                self.score_pool()
                     .iter()
                     .map(|v| v.to_string())
                     .collect::<Vec<_>>()
@@ -790,7 +797,7 @@ impl Render for WizardView {
                 }
             }
             Step::Scores => {
-                let pool = self.score_pool(self.sel);
+                let pool = self.score_pool();
                 let pool_s = pool
                     .iter()
                     .map(|v| v.to_string())
@@ -985,6 +992,23 @@ impl Render for WizardView {
             .on_action(cx.listener(|this, _: &WizardCycleUp, _window, cx| {
                 this.cycle_score(1, cx);
             }))
+            .on_action(cx.listener(|this, _: &WizardClearScore, _window, cx| {
+                if this.step() == Step::Scores {
+                    this.draft.scores[this.sel] = None;
+                    this.say(
+                        format!(
+                            "{} cleared · pool: {}",
+                            Score::ALL_STR[this.sel].to_uppercase(),
+                            this.score_pool()
+                                .iter()
+                                .map(|v| v.to_string())
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        ),
+                        cx,
+                    );
+                }
+            }))
             .on_action(cx.listener(|this, _: &WizardCancel, window, cx| {
                 if let Some(mut cb) = this.on_finish.take() {
                     cb(WizardOutcome::Cancelled, window, cx);
@@ -1148,6 +1172,83 @@ mod tests {
         assert_eq!(c.gold, 15);
         // Spell slots exist for a level-1 full caster.
         assert!(c.meters.meters.contains_key("spell_slot_1"));
+    }
+
+    /// Drives the wizard exactly like the live check: open via
+    /// ctrl-shift-n, pick through the pickers with `enter`, then press
+    /// `right` on the scores step. This is the regression test for the
+    /// picker-close focus drop and the shadowed right-arrow binding.
+    #[gpui::test]
+    fn the_full_picker_flow_leaves_the_scores_step_responsive(cx: &mut gpui::TestAppContext) {
+        use crate::autosave::Autosave;
+        use crate::session::Session;
+        cx.update(|cx| {
+            cx.bind_keys(crate::root::keybindings());
+            cx.bind_keys(crate::sheet_view::keybindings());
+            cx.bind_keys(crate::field::field_keys(crate::dungeon_view::FIELD_CTX));
+            cx.bind_keys(crate::picker::picker_keys());
+            cx.bind_keys(crate::form::form_keys());
+            cx.bind_keys(wizard_keys());
+            Autosave::init(cx);
+        });
+        let window = cx.add_window(|_, cx| {
+            crate::root::RootView::new(
+                cx,
+                Session::default(),
+                None,
+                Some(test_corpus()),
+                Library::default(),
+                None,
+            )
+        });
+        window
+            .update(cx, |view, window, cx| window.focus(view.focus_handle(), cx))
+            .unwrap();
+
+        cx.simulate_keystrokes(window.into(), "ctrl-shift-n");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "T e s t y enter");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "e l f enter");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "enter"); // first elf subrace
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "w i z enter");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "a c o enter");
+        cx.run_until_parked();
+
+        let root = window.root(cx).unwrap();
+        let wiz = root
+            .read_with(cx, |r, _| r.wizard().cloned())
+            .expect("wizard open");
+        let step = wiz.read_with(cx, |w, _| w.step());
+        assert_eq!(step, Step::Scores, "flow reached the scores step");
+
+        // The live bug: after the last picker closed, arrow keys died.
+        cx.simulate_keystrokes(window.into(), "right");
+        cx.run_until_parked();
+        let s0 = wiz.read_with(cx, |w, _| w.draft.scores[0]);
+        assert!(s0.is_some(), "right arrow assigned STR ({s0:?})");
+        cx.simulate_keystrokes(window.into(), "left");
+        cx.run_until_parked();
+        let s0b = wiz.read_with(cx, |w, _| w.draft.scores[0]);
+        assert_ne!(s0, s0b, "left arrow cycled {s0:?} -> {s0b:?}");
+        // Regression (live check): right after an assignment must change
+        // the value, not cycle a duplicated pool entry onto itself.
+        cx.simulate_keystrokes(window.into(), "right right");
+        cx.run_until_parked();
+        let s0c = wiz.read_with(cx, |w, _| w.draft.scores[0]);
+        assert_ne!(s0b, s0c, "right cycled again {s0b:?} -> {s0c:?}");
+        // Backspace clears an assigned score (live check: no way to undo).
+        cx.simulate_keystrokes(window.into(), "backspace");
+        cx.run_until_parked();
+        let s0d = wiz.read_with(cx, |w, _| w.draft.scores[0]);
+        assert_eq!(s0d, None, "backspace cleared STR ({s0d:?})");
+        cx.simulate_keystrokes(window.into(), "down right");
+        cx.run_until_parked();
+        let s1 = wiz.read_with(cx, |w, _| w.draft.scores[1]);
+        assert!(s1.is_some(), "down+right assigned DEX ({s1:?})");
     }
 
     #[test]
