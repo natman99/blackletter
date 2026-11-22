@@ -229,8 +229,10 @@ in every picker/flow from then on.
   (wizard.rs + build_character + ctrl-shift-n + SheetDoc::with_character),
   fix chain 800d15c/2ec6664/e62962e/d1260b1 (focus-before-drop, key
   shadowing, score-pool duplicate, backspace-to-clear, hjkl +
-  choice-step scrolling + gating feedback). Live-verified end to end by
-  the user: Testy the wizard High Elf created and saved into the campaign.
+  choice-step scrolling + gating feedback), 3ad202c (starting-spell
+  picker steps from Levels.json counts, [ ] step nav, confirm refuses
+  until every field is full). Live-verified end to end by the user:
+  Testy the wizard High Elf created and saved into the campaign.
 - Deviations: ability scores ship standard-array only (point-buy and
   manual are a planned sibling step); confirm step shows a text summary
   rather than a full feature/spell preview list; class subclass choice
