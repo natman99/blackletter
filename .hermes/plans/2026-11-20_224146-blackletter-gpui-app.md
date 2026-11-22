@@ -2,7 +2,7 @@
 
 > **For Hermes:** use the subagent-driven-development skill to implement this plan phase-by-phase. Each phase ends green at the gates before the next starts.
 
-**Progress (2026-11-21):** Phase 0 DONE (iced deleted 4c26c64; blackletter_dungeon ported 8233bec; gpui scaffold live-verified 4b32f5f). Phase 1 DONE (app shell c35cd42; session+autosave 140404c — 0% idle CPU; campaign folders + rfd pickers 22e9746; windows-gnu green). Phase 2 DONE (lock/open door upgrade ec155d3; GPUI dungeon view 6817ed7 — canvas map, 41 keyboard actions, undo/redo, pan/zoom, help overlay, jump-centers-camera, same-floor path overlay, DC labels above door bars, dungeon switcher ctrl-,/ctrl-.). Phase 2.5 DONE (f94fbcf: shale Field widget ported to field.rs; enter rename / shift-O notes via Field key context; room info panel). 21 app + 47 dungeon tests. Phase 4 underway: Task 4.1 DONE (49916fc corpus loader + vendored srd/); Task 4.2 DONE — picker.rs (searchable SRD overlay: spell/item/feat/race/trait/feature, edition-tagged, centered over a dim scrim), Corpus loaded at startup into RootView, `/` per section + `+ add …` rows in Features, sheet fields got the missing field_key_actions/backspace handlers, sheet::Race::try_from_database. 44 app + 102 types tests, live-verified.
+**Progress (2026-11-21):** Phase 0 DONE (iced deleted 4c26c64; blackletter_dungeon ported 8233bec; gpui scaffold live-verified 4b32f5f). Phase 1 DONE (app shell c35cd42; session+autosave 140404c — 0% idle CPU; campaign folders + rfd pickers 22e9746; windows-gnu green). Phase 2 DONE (lock/open door upgrade ec155d3; GPUI dungeon view 6817ed7 — canvas map, 41 keyboard actions, undo/redo, pan/zoom, help overlay, jump-centers-camera, same-floor path overlay, DC labels above door bars, dungeon switcher ctrl-,/ctrl-.). Phase 2.5 DONE (f94fbcf: shale Field widget ported to field.rs; enter rename / shift-O notes via Field key context; room info panel). 21 app + 47 dungeon tests. Phase 4 underway: Task 4.1 DONE (49916fc corpus loader + vendored srd/); Task 4.2 DONE — picker.rs (searchable SRD overlay: spell/item/feat/race/trait/feature, edition-tagged, centered over a dim scrim), Corpus loaded at startup into RootView, `/` per section + `+ add …` rows in Features, sheet fields got the missing field_key_actions/backspace handlers, sheet::Race::try_from_database. 44 app + 102 types tests, live-verified. Task 4.3 DONE (library + add-menus). Phase 5: Task 5.1 DONE (creation wizard, live-verified end to end); 53 app + 109 types tests.
 
 **Goal:** Replace the jank iced GUI with a single GPUI desktop app (`blackletter`) that (1) creates and manages D&D 5e character sheets as completely as possible, and (2) folds in a rewrite of `~/Documents/Coding/Rust/dungeon-tracker` as a second mode — auto-saving, working on Linux and Windows.
 
@@ -223,7 +223,18 @@ in every picker/flow from then on.
 
 ## Phase 5 — Character creation wizard + level-up
 
-### Task 5.1 — New-character wizard
+### Task 5.1 — New-character wizard — DONE (2026-11-23)
+- Shipped: 82585fa/84653a2 (engine gaps: option sets + choice fields +
+  subrace rows + apply_subrace + Class::try_from_database), 008abd0
+  (wizard.rs + build_character + ctrl-shift-n + SheetDoc::with_character),
+  fix chain 800d15c/2ec6664/e62962e/d1260b1 (focus-before-drop, key
+  shadowing, score-pool duplicate, backspace-to-clear, hjkl +
+  choice-step scrolling + gating feedback). Live-verified end to end by
+  the user: Testy the wizard High Elf created and saved into the campaign.
+- Deviations: ability scores ship standard-array only (point-buy and
+  manual are a planned sibling step); confirm step shows a text summary
+  rather than a full feature/spell preview list; class subclass choice
+  stays deferred (no subclass step at L1 — wizard L1 grants none anyway).
 - `blackletter/src/wizard.rs`: linear flow with a step rail: 1) name 2) race (SRD picker + subrace when the race has subraces; applies `Race` grants + speed) 3) class (subclass choice deferred to the class's subclass level if level 1 doesn't grant it — check `Levels.json` per class) 4) **background** (SRD picker; applies `Background` grant: skill proficiencies, languages, feat, starting equipment) 5) ability scores (point-buy 27 + standard array + manual, per PHB) 6) class starting equipment (`starting_equipment_options` "choose X from Y" prompts, plus the package from `starting_equipment`) 7) level-1 features/skills/spells preview → confirm → `Character` with everything granted, `sync_*` called.
 - Engine gaps to fill in `blackletter_types` first (with tests): class starting-features lookup from database, equipment-option choice parsing, skill-choice validation (class list × background skills). Flag each gap as its own commit.
 
