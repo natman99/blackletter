@@ -1,6 +1,7 @@
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "serde")]
 use super::reference::Reference;
 
 /// Raw `5e-SRD-Features.json` entry.
