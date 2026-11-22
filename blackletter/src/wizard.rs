@@ -579,7 +579,15 @@ impl WizardView {
         let opts = self.pending_options();
         let Some(opt) = opts.get(i) else { return };
         let cands = opt.candidates();
-        if cands.get(self.sel).is_none() {
+        let Some(cand) = cands.get(self.sel) else {
+            return;
+        };
+        let granted = granted_indexes(self.corpus.as_ref(), &self.draft);
+        if granted.contains(&cand.index) {
+            self.say(
+                format!("{} is already gained — pick another", cand.name),
+                cx,
+            );
             return;
         }
         let idx = self.sel;
@@ -671,6 +679,36 @@ impl WizardView {
             cb(outcome, window, cx);
         }
     }
+}
+
+/// Candidate indexes the draft has ALREADY been granted: background and
+/// class skill proficiencies, race languages, the class's fixed
+/// proficiency references, and items in the class's fixed equipment
+/// package. Nothing on the sheet applies twice, so the choice steps
+/// cross these off and refuse to toggle them.
+fn granted_indexes(corpus: &Corpus, draft: &Draft) -> std::collections::HashSet<String> {
+    let mut g = std::collections::HashSet::new();
+    if let Some(bi) = draft.background.as_deref()
+        && let Some(b) = corpus.background(bi)
+    {
+        g.extend(b.starting_proficiencies.iter().map(|p| p.index.clone()));
+    }
+    if let Some(ri) = draft.race.as_deref()
+        && let Some(r) = corpus.race(ri)
+    {
+        g.extend(r.languages.iter().map(|l| l.index.clone()));
+    }
+    if let Some(ci) = draft.class.as_deref()
+        && let Some(c) = corpus.class(ci)
+    {
+        g.extend(c.proficiencies.iter().map(|p| p.index.clone()));
+        g.extend(
+            c.starting_equipment
+                .iter()
+                .map(|e| e.equipment.index.clone()),
+        );
+    }
+    g
 }
 
 /// Turn a completed draft into a granted level-1 character (plan Task
@@ -1026,6 +1064,9 @@ impl Focusable for WizardView {
     }
 }
 
+/// The name field has no derived state to refresh on text change.
+fn after_wiz_name_change(_this: &mut WizardView, _cx: &mut gpui::Context<WizardView>) {}
+
 impl Render for WizardView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let step = self.step();
@@ -1155,28 +1196,38 @@ impl Render for WizardView {
                 let opt = opts.get(i).cloned().unwrap_or_default();
                 let cands = opt.candidates();
                 let selected = self.draft.choices.get(i).cloned().unwrap_or_default();
+                let granted = granted_indexes(self.corpus.as_ref(), &self.draft);
                 let rows: Vec<_> = cands
                     .iter()
                     .enumerate()
                     .map(|(j, cand)| {
                         let is_sel = selected.contains(&j);
                         let cursor = j == self.sel;
+                        let have = granted.contains(&cand.index);
                         div()
                             .id(("cand", j))
                             .px_2()
                             .rounded_sm()
                             .when(cursor, |d| d.bg(gpui::rgb(0x35_35_48)))
+                            .when(have, |d| d.text_color(gpui::rgb(0x5a_5e_78)))
                             .on_click(cx.listener(move |this, _, _window, _cx| {
                                 this.sel = j;
                             }))
                             .child(format!(
-                                "{} {}",
-                                if is_sel { "[x]" } else { "[ ]" },
+                                "{} {}{}",
+                                if have {
+                                    "[✕]"
+                                } else if is_sel {
+                                    "[x]"
+                                } else {
+                                    "[ ]"
+                                },
                                 if cand.quantity > 1 {
                                     format!("{} ×{}", cand.name, cand.quantity)
                                 } else {
                                     cand.name.clone()
-                                }
+                                },
+                                if have { " — already gained" } else { "" }
                             ))
                     })
                     .collect();
@@ -1226,7 +1277,7 @@ impl Render for WizardView {
             }
         };
 
-        div()
+        let base = div()
             .track_focus(&self.focus_handle)
             .key_context(if picker_open {
                 crate::picker::PICKER_CTX
@@ -1349,6 +1400,26 @@ impl Render for WizardView {
                 // The name field's enter is the same advance as WizardNext.
                 this.on_action_submit(window, cx);
             }))
+            .on_action(cx.listener(|this, _: &crate::field::FieldBackspace, _, cx| {
+                this.field_mut().backspace();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &crate::field::FieldDelete, _, cx| {
+                this.field_mut().delete_forward();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &crate::field::FieldDeleteWordBack, _, cx| {
+                this.field_mut().delete_word_back();
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &crate::field::FieldLeft, _, cx| {
+                this.field_mut().step_caret(-1);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &crate::field::FieldRight, _, cx| {
+                this.field_mut().step_caret(1);
+                cx.notify();
+            }))
             .on_action(cx.listener(|this, _: &FieldCancel, _window, cx| {
                 this.say("field edit cancelled", cx);
             }))
@@ -1391,7 +1462,11 @@ impl Render for WizardView {
                         .pt(gpui::px(56.))
                         .child(p),
                 )
-            })
+            });
+
+        // Selection/clipboard chords for the name field (FIELD_CTX);
+        // Backspace/Delete/Left/Right are wired explicitly above.
+        crate::field_key_actions!(base, cx, after_wiz_name_change)
     }
 }
 
@@ -1475,6 +1550,19 @@ mod tests {
             "feather-fall".into(),
         ];
         d
+    }
+
+    #[test]
+    fn granted_indexes_cross_off_background_and_race_gains() {
+        let g = granted_indexes(&test_corpus(), &wizard_draft());
+        // Acolyte skills — the wizard's skill prompt must not offer them.
+        assert!(g.contains("skill-insight") && g.contains("skill-religion"));
+        // Elf languages and the class's fixed grants.
+        assert!(g.contains("common") && g.contains("elvish"));
+        assert!(g.contains("spellbook"), "fixed equipment package");
+        assert!(g.contains("saving-throw-int"), "class proficiencies");
+        // The pickable skill rows (Arcana/History) are NOT in the set.
+        assert!(!g.contains("skill-arcana") && !g.contains("skill-history"));
     }
 
     #[test]
@@ -1600,7 +1688,9 @@ mod tests {
 
         cx.simulate_keystrokes(window.into(), "ctrl-shift-n");
         cx.run_until_parked();
-        cx.simulate_keystrokes(window.into(), "T e s t y enter");
+        // Typo + backspace: FIELD_CTX backspace must reach the field
+        // (live bug: the wizard never handled FieldBackspace).
+        cx.simulate_keystrokes(window.into(), "T e s t y z backspace enter");
         cx.run_until_parked();
         cx.simulate_keystrokes(window.into(), "e l f enter");
         cx.run_until_parked();
@@ -1615,6 +1705,11 @@ mod tests {
         let wiz = root
             .read_with(cx, |r, _| r.wizard().cloned())
             .expect("wizard open");
+        assert_eq!(
+            wiz.read_with(cx, |w, _| w.draft.name.clone()),
+            "Testy",
+            "backspace deleted the typo'd z"
+        );
         let step = wiz.read_with(cx, |w, _| w.step());
         assert_eq!(step, Step::Scores, "flow reached the scores step");
 
@@ -1681,8 +1776,21 @@ mod tests {
         // (2 of 5).
         cx.simulate_keystrokes(window.into(), "space enter space enter");
         cx.run_until_parked();
-        cx.simulate_keystrokes(window.into(), "space j space enter");
+        // Skill choice: Acolyte already grants Insight and Religion,
+        // so those rows are crossed off and refuse to toggle.
+        cx.simulate_keystrokes(window.into(), "j j space");
         cx.run_until_parked();
+        assert!(
+            wiz.read_with(cx, |w, _| w.draft.choices[3].is_empty()),
+            "background-granted Insight must not be pickable"
+        );
+        cx.simulate_keystrokes(window.into(), "k k space j space enter");
+        cx.run_until_parked();
+        assert_eq!(
+            wiz.read_with(cx, |w, _| w.draft.choices[3].clone()),
+            vec![0, 1],
+            "Arcana + History picked instead"
+        );
         assert_eq!(
             wiz.read_with(cx, |w, _| w.step()),
             Step::SpellChoice(SpellPrompt::Cantrips)
