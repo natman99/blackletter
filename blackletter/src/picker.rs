@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use blackletter_types::database::corpus::Corpus;
+use blackletter_types::{database::corpus::Corpus, library::Library};
 use gpui::{
     App, Context, FocusHandle, Focusable, KeyBinding, Render, SharedString, Window, actions, div,
     prelude::*,
@@ -98,10 +98,11 @@ impl Picker {
     pub fn new(
         kind: PickKind,
         corpus: Arc<Corpus>,
+        library: Option<&Library>,
         on_choice: impl FnMut(PickerOutcome, &mut Window, &mut App) + Send + 'static,
         cx: &mut Context<Self>,
     ) -> Self {
-        let all = rows_for(&corpus, kind);
+        let all = rows_for(&corpus, library, kind);
         let rows = all.clone();
         let mut field = Field::new("");
         field.caret_to_end();
@@ -185,7 +186,17 @@ impl Picker {
 
 /// Build every row for a kind from the corpus. Edition-tagged: the corpus
 /// is loaded per-edition and the header shows which one is on screen.
-fn rows_for(corpus: &Corpus, kind: PickKind) -> Vec<PickRow> {
+fn rows_for(corpus: &Corpus, library: Option<&Library>, kind: PickKind) -> Vec<PickRow> {
+    let mut out = srd_rows(corpus, kind);
+    // Custom entries ride the same rows, tagged and prefixed (Task 4.3):
+    // a library spell *is* a sheet::Spell, so apply needs no conversion.
+    if let Some(lib) = library {
+        out.extend(custom_rows(lib, kind));
+    }
+    out
+}
+
+fn srd_rows(corpus: &Corpus, kind: PickKind) -> Vec<PickRow> {
     let row = |index: String, label: String, detail: String| PickRow {
         hay: format!("{} {}", label.to_lowercase(), index.replace('-', " ")),
         index,
@@ -308,6 +319,110 @@ fn rows_for(corpus: &Corpus, kind: PickKind) -> Vec<PickRow> {
                     format!("{} — {} L{}", f.name, owner, f.level),
                     join(&f.desc),
                 )
+            })
+            .collect(),
+    }
+}
+
+/// Library rows for a kind, indexed `custom:<name>` and tagged `[custom]`.
+fn custom_rows(lib: &Library, kind: PickKind) -> Vec<PickRow> {
+    let row = |name: &str, label: String, detail: String| PickRow {
+        hay: format!(
+            "{} {} custom homebrew",
+            label.to_lowercase(),
+            name.to_lowercase()
+        ),
+        index: Library::custom_index(name),
+        label,
+        detail,
+    };
+    match kind {
+        PickKind::Spell => lib
+            .spells
+            .values()
+            .map(|sp| {
+                let meta = format!(
+                    "Range: {} · Casting: {} · Duration: {}{}{}",
+                    sp.range,
+                    sp.cast_time,
+                    sp.duration,
+                    if sp.concentration {
+                        " · concentration"
+                    } else {
+                        ""
+                    },
+                    if sp.ritual { " · ritual" } else { "" },
+                );
+                let detail = if sp.desc.is_empty() {
+                    meta
+                } else {
+                    format!("{}\n\n{}", sp.desc, meta)
+                };
+                row(
+                    &sp.name,
+                    format!("{} — L{} {} [custom]", sp.name, sp.level, sp.school),
+                    detail,
+                )
+            })
+            .collect(),
+        PickKind::Item => lib
+            .items
+            .values()
+            .map(|it| {
+                row(
+                    &it.name,
+                    format!("{} [custom]", it.name),
+                    it.description.clone(),
+                )
+            })
+            .collect(),
+        PickKind::Feat => lib
+            .feats
+            .values()
+            .map(|f| {
+                let detail = f.feature.as_ref().map_or_else(String::new, |fe| {
+                    fe.effects
+                        .iter()
+                        .map(|e| format!("{e}"))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                });
+                row(&f.name, format!("{} [custom]", f.name), detail)
+            })
+            .collect(),
+        PickKind::Race => lib
+            .races
+            .values()
+            .map(|r| {
+                let ab: Vec<String> = r
+                    .ability_bonuses
+                    .iter()
+                    .map(|b| format!("+{} {}", b.bonus, b.score))
+                    .collect();
+                let detail = format!(
+                    "Speed {}. {}",
+                    r.speed.map_or("—".into(), |s| format!("{s} ft")),
+                    ab.join(", ")
+                );
+                row(&r.name, format!("{} [custom]", r.name), detail)
+            })
+            .collect(),
+        PickKind::Trait => lib
+            .traits
+            .values()
+            .map(|t| row(&t.name, format!("{} [custom]", t.name), t.desc.clone()))
+            .collect(),
+        PickKind::Feature => lib
+            .features
+            .values()
+            .map(|f| {
+                let detail = f
+                    .effects
+                    .iter()
+                    .map(|e| format!("{e}"))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                row(&f.name, format!("{} [custom]", f.name), detail)
             })
             .collect(),
     }
@@ -552,7 +667,28 @@ mod tests {
     }
 
     fn picker(cx: &mut TestAppContext, kind: PickKind) -> Entity<Picker> {
-        cx.new(|cx| Picker::new(kind, corpus(), |_, _, _| {}, cx))
+        cx.new(|cx| Picker::new(kind, corpus(), None, |_, _, _| {}, cx))
+    }
+
+    #[gpui::test]
+    fn custom_entries_merge_into_the_rows(cx: &mut TestAppContext) {
+        let mut lib = Library::default();
+        lib.spells.insert(
+            "Moonfire Bolt".into(),
+            blackletter_types::sheet::spells::Spell {
+                name: "Moonfire Bolt".into(),
+                level: 4,
+                ..Default::default()
+            },
+        );
+        let p = cx.new(|cx| Picker::new(PickKind::Spell, corpus(), Some(&lib), |_, _, _| {}, cx));
+        p.update(cx, |p, _| {
+            p.field.insert("moonfire");
+            p.refilter();
+            assert_eq!(p.rows.len(), 1);
+            assert_eq!(p.rows[0].index, "custom:Moonfire Bolt");
+            assert!(p.rows[0].label.contains("[custom]"));
+        });
     }
 
     #[gpui::test]

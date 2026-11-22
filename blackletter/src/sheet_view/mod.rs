@@ -16,6 +16,7 @@ use blackletter_types::{
     condition::{Condition, ConditionKind},
     damage::DamageType,
     database::corpus::Corpus,
+    library::Library,
     roll::Advantage,
     skills::Skill,
 };
@@ -202,6 +203,8 @@ pub struct SheetView {
     characters_dir: Option<PathBuf>,
     /// The SRD corpus for the pickers (plan Task 4.2); `None` disables them.
     corpus: Option<Arc<Corpus>>,
+    /// The custom-content library (plan Task 4.3), merged into every picker.
+    library: Entity<Library>,
     root: WeakEntity<RootView>,
     section: Section,
     focus_handle: FocusHandle,
@@ -224,6 +227,7 @@ impl SheetView {
         doc: SheetDoc,
         characters_dir: Option<PathBuf>,
         corpus: Option<Arc<Corpus>>,
+        library: Entity<Library>,
         root: WeakEntity<RootView>,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -231,6 +235,7 @@ impl SheetView {
             doc,
             characters_dir,
             corpus,
+            library,
             root,
             section: Section::Basic,
             focus_handle: cx.focus_handle(),
@@ -972,11 +977,13 @@ impl SheetView {
             self.report("SRD corpus not found — pickers disabled", cx);
             return;
         };
+        let lib = self.library.read(cx).clone();
         let sheet = cx.entity().downgrade();
         let picker = cx.new(|cx| {
             Picker::new(
                 kind,
                 corpus,
+                Some(&lib),
                 move |outcome, window, cx| {
                     sheet
                         .update(cx, |v, cx| v.on_pick(kind, outcome, window, cx))
@@ -1014,6 +1021,10 @@ impl SheetView {
     /// Import the picked corpus entry into the sheet through the engine's
     /// conversions, reporting success and failure to the status bar.
     fn apply_pick(&mut self, kind: PickKind, index: &str, cx: &mut Context<Self>) {
+        if Library::is_custom(index) {
+            self.apply_custom_pick(kind, index, cx);
+            return;
+        }
         let Some(corpus) = self.corpus.clone() else {
             return;
         };
@@ -1108,6 +1119,99 @@ impl SheetView {
                     name: db.name.clone(),
                     source: Some(srd()),
                     effects: vec![],
+                };
+                let name = feat.name.clone();
+                if self.doc.character.has_grant(&name) {
+                    self.report(format!("{name} already granted"), cx);
+                    return;
+                }
+                self.doc.edit(|c| c.add_feature(feat));
+                self.report(format!("added feature {name}"), cx);
+            }
+        }
+    }
+
+    /// A library pick needs no conversion — entries are already sheet
+    /// types — only the same duplicate checks and grant bookkeeping.
+    fn apply_custom_pick(&mut self, kind: PickKind, index: &str, cx: &mut Context<Self>) {
+        let Some(name) = Library::custom_name(index).map(str::to_owned) else {
+            return;
+        };
+        let lib = self.library.read(cx).clone();
+        match kind {
+            PickKind::Spell => {
+                let Some(sp) = lib.spells.get(&name).cloned() else {
+                    self.report("library entry vanished", cx);
+                    return;
+                };
+                let outcome = self.doc.try_edit(|c| {
+                    let name = sp.name.clone();
+                    if c.spells.spells.insert(name.clone(), sp).is_some() {
+                        anyhow::bail!("{name} is already in the spellbook");
+                    }
+                    Ok(name)
+                });
+                match outcome {
+                    Ok(name) => self.report(format!("added {name} to the spellbook"), cx),
+                    Err(e) => self.report(format!("could not add spell: {e}"), cx),
+                }
+            }
+            PickKind::Item => {
+                let Some(item) = lib.items.get(&name).cloned() else {
+                    self.report("library entry vanished", cx);
+                    return;
+                };
+                let outcome = self.doc.try_edit(|c| {
+                    let name = item.name.clone();
+                    if c.inventory.0.insert(name.clone(), item).is_some() {
+                        anyhow::bail!("{name} is already in the inventory");
+                    }
+                    Ok(name)
+                });
+                match outcome {
+                    Ok(name) => self.report(format!("added {name} to the inventory"), cx),
+                    Err(e) => self.report(format!("could not add item: {e}"), cx),
+                }
+            }
+            PickKind::Feat => {
+                let Some(feat) = lib.feats.get(&name).cloned() else {
+                    self.report("library entry vanished", cx);
+                    return;
+                };
+                let name = feat.name.clone();
+                if self.doc.character.has_grant(&name) {
+                    self.report(format!("{name} already granted"), cx);
+                    return;
+                }
+                self.doc.edit(|c| c.add_feat(feat));
+                self.report(format!("added feat {name}"), cx);
+            }
+            PickKind::Race => {
+                let Some(race) = lib.races.get(&name).cloned() else {
+                    self.report("library entry vanished", cx);
+                    return;
+                };
+                let name = race.name.clone();
+                self.doc.edit(|c| c.race = Some(race));
+                self.report(format!("race set to {name}"), cx);
+            }
+            PickKind::Trait => {
+                let Some(tr) = lib.traits.get(&name).cloned() else {
+                    self.report("library entry vanished", cx);
+                    return;
+                };
+                let name = tr.name.clone();
+                if self.doc.character.has_grant(&name) {
+                    self.report(format!("{name} already granted"), cx);
+                    return;
+                }
+                self.doc.edit(|c| c.add_trait(tr));
+                self.report(format!("added trait {name}"), cx);
+            }
+            PickKind::Feature => {
+                let Some(feat) = lib.features.get(&name).cloned() else {
+                    self.report("library entry vanished", cx);
+                    return;
                 };
                 let name = feat.name.clone();
                 if self.doc.character.has_grant(&name) {
@@ -2442,10 +2546,11 @@ pub fn build(
     doc: SheetDoc,
     characters_dir: Option<PathBuf>,
     corpus: Option<Arc<Corpus>>,
+    library: Entity<Library>,
     root: WeakEntity<RootView>,
     cx: &mut Context<RootView>,
 ) -> Entity<SheetView> {
-    cx.new(|cx| SheetView::new(doc, characters_dir, corpus, root, cx))
+    cx.new(|cx| SheetView::new(doc, characters_dir, corpus, library, root, cx))
 }
 
 #[cfg(test)]
@@ -2477,7 +2582,9 @@ mod tests {
             cx.bind_keys(crate::picker::picker_keys());
             Autosave::init(cx);
         });
-        let window = cx.add_window(|_, cx| RootView::new(cx, Session::default(), None, corpus));
+        let window = cx.add_window(|_, cx| {
+            RootView::new(cx, Session::default(), None, corpus, Library::default())
+        });
         window
             .update(cx, |view, window, cx| window.focus(view.focus_handle(), cx))
             .unwrap();
@@ -2993,6 +3100,47 @@ mod tests {
         assert!(
             cx.read(|cx| view.read(cx).picker.is_none()),
             "picker dismisses after picking"
+        );
+    }
+
+    #[gpui::test]
+    fn a_library_spell_flows_through_the_picker(cx: &mut TestAppContext) {
+        // Task 4.3: custom content rides the same picker as SRD content.
+        let (window, root) = open_sheet_with(cx, Some(test_corpus()));
+        root.update(cx, |root, cx| {
+            root.library().update(cx, |lib, _| {
+                lib.spells.insert(
+                    "Moonfire Bolt".into(),
+                    blackletter_types::sheet::spells::Spell {
+                        name: "Moonfire Bolt".into(),
+                        level: 4,
+                        ..Default::default()
+                    },
+                );
+            });
+        });
+        let view = sheet(cx, &root);
+        cx.simulate_keystrokes(window.into(), "] ] ] ]"); // Spells
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "/");
+        cx.run_until_parked();
+        cx.simulate_input(window.into(), "moonfire");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "enter");
+        cx.run_until_parked();
+        let spells = cx.read(|cx| {
+            view.read(cx)
+                .doc()
+                .character
+                .spells
+                .spells
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+        });
+        assert!(
+            spells.iter().any(|s| s == "Moonfire Bolt"),
+            "library spell must land in the spellbook: {spells:?}"
         );
     }
 

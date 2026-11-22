@@ -34,6 +34,11 @@ fn main() {
         let corpus = blackletter_types::database::corpus::Corpus::load_vendored()
             .ok()
             .map(std::sync::Arc::new);
+        // The custom-content library (Task 4.3) is the second content
+        // source: cached on disk, merged into every picker.
+        let library = session::library_path()
+            .and_then(|p| blackletter_types::library::Library::load(&p).ok())
+            .unwrap_or_default();
         let window = match cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
@@ -47,7 +52,7 @@ fn main() {
                 }),
                 ..Default::default()
             },
-            |_, cx| cx.new(|cx| RootView::new(cx, session, session_path, corpus)),
+            |_, cx| cx.new(|cx| RootView::new(cx, session, session_path, corpus, library)),
         ) {
             Ok(w) => w,
             Err(e) => {

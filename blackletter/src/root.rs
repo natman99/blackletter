@@ -12,7 +12,7 @@ use crate::autosave::Autosave;
 use crate::dungeon_view::{self, DungeonDoc, DungeonView};
 use crate::session::Session;
 use crate::sheet_view::{self, SheetDoc, SheetView};
-use blackletter_types::database::corpus::Corpus;
+use blackletter_types::{database::corpus::Corpus, library::Library};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -56,17 +56,22 @@ pub struct RootView {
     session_path: Option<PathBuf>,
     /// The SRD corpus, loaded once at startup; `None` disables the pickers.
     corpus: Option<Arc<Corpus>>,
+    /// The custom-content library (plan Task 4.3), loaded at startup and
+    /// saved on every change; every sheet view shares this one entity.
+    library: Entity<Library>,
     dungeon: Option<Entity<DungeonView>>,
     sheet: Option<Entity<SheetView>>,
 }
 
 impl RootView {
     pub fn new(
-        cx: &gpui::App,
+        cx: &mut gpui::App,
         session: Session,
         session_path: Option<PathBuf>,
         corpus: Option<Arc<Corpus>>,
+        library: Library,
     ) -> Self {
+        let library = cx.new(|_| library);
         let mode = session.mode.into();
         let status = if corpus.is_some() {
             None
@@ -80,9 +85,15 @@ impl RootView {
             session,
             session_path,
             corpus,
+            library,
             dungeon: None,
             sheet: None,
         }
+    }
+
+    /// The shared custom-content library entity (plan Task 4.3).
+    pub fn library(&self) -> &Entity<Library> {
+        &self.library
     }
 
     #[cfg(test)]
@@ -137,7 +148,14 @@ impl RootView {
     fn build_sheet(&mut self, cx: &mut Context<Self>) -> Entity<SheetView> {
         let (doc, dir) = self.sheet_doc_or_new();
         let root = cx.entity().downgrade();
-        let view = sheet_view::build(doc, dir.clone(), self.corpus.clone(), root, cx);
+        let view = sheet_view::build(
+            doc,
+            dir.clone(),
+            self.corpus.clone(),
+            self.library.clone(),
+            root,
+            cx,
+        );
         let weak = view.downgrade();
         let id = view.entity_id();
         cx.global_mut::<Autosave>().register(
@@ -209,7 +227,14 @@ impl RootView {
         cx: &mut Context<Self>,
     ) -> Entity<SheetView> {
         let root = cx.entity().downgrade();
-        let view = sheet_view::build(doc, dir, self.corpus.clone(), root, cx);
+        let view = sheet_view::build(
+            doc,
+            dir,
+            self.corpus.clone(),
+            self.library.clone(),
+            root,
+            cx,
+        );
         let weak = view.downgrade();
         let id = view.entity_id();
         cx.global_mut::<Autosave>().register(
@@ -495,7 +520,9 @@ mod tests {
             cx.bind_keys(keybindings());
             crate::autosave::Autosave::init(cx);
         });
-        let window = cx.add_window(|_, cx| RootView::new(cx, Session::default(), None, None));
+        let window = cx.add_window(|_, cx| {
+            RootView::new(cx, Session::default(), None, None, Library::default())
+        });
         window
             .update(cx, |view, window, cx| window.focus(&view.focus_handle, cx))
             .unwrap();
@@ -528,8 +555,15 @@ mod tests {
             cx.bind_keys(keybindings());
             crate::autosave::Autosave::init(cx);
         });
-        let window =
-            cx.add_window(|_, cx| RootView::new(cx, Session::default(), Some(path.clone()), None));
+        let window = cx.add_window(|_, cx| {
+            RootView::new(
+                cx,
+                Session::default(),
+                Some(path.clone()),
+                None,
+                Library::default(),
+            )
+        });
         window
             .update(cx, |view, window, cx| window.focus(&view.focus_handle, cx))
             .unwrap();

@@ -56,6 +56,12 @@ pub fn session_path() -> Option<PathBuf> {
     ProjectDirs::from("", "", "blackletter").map(|p| p.config_dir().join("session.json"))
 }
 
+/// Where the custom-content library lives (plan Task 4.3): cached across
+/// sessions so anything added shows up in every future picker.
+pub fn library_path() -> Option<PathBuf> {
+    ProjectDirs::from("", "", "blackletter").map(|p| p.config_dir().join("library.json"))
+}
+
 pub fn load(path: &Path) -> Session {
     std::fs::read_to_string(path)
         .ok()
