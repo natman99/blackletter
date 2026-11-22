@@ -28,7 +28,7 @@ use gpui::{
     actions, div, prelude::*,
 };
 
-use crate::field::{Field, FieldCancel, FieldElement, FieldOwner, FieldSubmit, field_keys};
+use crate::field::{Field, FieldCancel, FieldElement, FieldOwner, FieldSubmit};
 use crate::picker::{PickKind, Picker, PickerOutcome};
 
 pub const WIZARD_CTX: &str = "Wizard";
@@ -60,7 +60,11 @@ pub fn wizard_keys() -> Vec<KeyBinding> {
         KeyBinding::new("right", WizardCycleUp, ctx),
         KeyBinding::new("escape", WizardCancel, ctx),
     ];
-    kb.extend(field_keys(WIZARD_CTX));
+    // NOTE: deliberately no field_keys(WIZARD_CTX) here — the name step
+    // runs in FIELD_CTX (which carries the field table), and extending it
+    // into WIZARD_CTX double-binds enter/esc/left/right to Field actions
+    // the wizard does not handle, shadowing WizardNext/WizardCancel/
+    // WizardCycleUp (live-check finding).
     kb
 }
 
@@ -218,6 +222,7 @@ impl WizardView {
             self.sel = 0;
             self.enter_step(window, cx);
         }
+        self.reclaim_focus(window, cx);
     }
 
     fn back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -226,6 +231,15 @@ impl WizardView {
             self.idx -= 1;
             self.sel = 0;
             self.enter_step(window, cx);
+        }
+        self.reclaim_focus(window, cx);
+    }
+
+    /// gpui drops focus when the focused entity (a closed picker) is
+    /// released; keyboard steps need the wizard's own handle back.
+    fn reclaim_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.picker.is_none() {
+            window.focus(&self.focus_handle, cx);
         }
     }
 
@@ -265,6 +279,13 @@ impl WizardView {
                 cx,
             )
         });
+        if kind == PickKind::Subrace
+            && let Some(ri) = &self.draft.race
+            && let Some(r) = self.corpus.race(ri)
+        {
+            let allowed: Vec<String> = r.subraces.iter().map(|sr| sr.index.clone()).collect();
+            picker.update(cx, |p, _| p.restrict(&allowed));
+        }
         self.picker = Some(picker.clone());
         window.focus(&picker.read(cx).focus_handle(cx), cx);
         self.say("type to filter · ↑/↓ move · enter picks · esc closes", cx);
@@ -282,6 +303,7 @@ impl WizardView {
         match outcome {
             PickerOutcome::Cancelled => {
                 self.say("picker closed — enter reopens it", cx);
+                self.reclaim_focus(window, cx);
             }
             PickerOutcome::Chosen(index) => match kind {
                 PickKind::Race => {

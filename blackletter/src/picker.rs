@@ -179,6 +179,15 @@ impl Picker {
         }
     }
 
+    /// Keep only rows whose index is in `indexes` (e.g. the wizard's
+    /// subrace picker showing only the chosen race's subraces).
+    pub fn restrict(&mut self, indexes: &[String]) {
+        self.all.retain(|r| indexes.contains(&r.index));
+        self.refilter();
+        self.sel = 0;
+        self.scroll = 0;
+    }
+
     fn confirm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let chosen = self.rows.get(self.sel).map(|r| r.index.clone());
         let Some(mut cb) = self.on_choice.take() else {

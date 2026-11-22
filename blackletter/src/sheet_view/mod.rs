@@ -3197,14 +3197,19 @@ mod tests {
         // Row 9 = death save roll (only meaningful while down; the engine
         // still tracks pips, and long rest clears them).
         cx.simulate_keystrokes(window.into(), "j");
+        let hp_before = cx.read(|cx| view.read(cx).doc().character.health.current);
         cx.simulate_keystrokes(window.into(), "space");
         cx.run_until_parked();
-        let ds = cx.read(|cx| view.read(cx).doc().character.death_saves);
-        // A nat 20 stabilizes instantly and clears the pips, so "a save was
-        // recorded" must accept that branch too (flaky otherwise).
+        let (ds, hp_after) = cx.read(|cx| {
+            let c = &view.read(cx).doc().character;
+            (c.death_saves, c.health.current)
+        });
+        // RNG branches: a pip is recorded; a nat 20 revives (regain 1 HP,
+        // pips reset) or stabilizes — both leave no pips behind, so the
+        // HP bump and `stable` are the accepted alternates (flaky-proof).
         assert!(
-            ds.successes + ds.failures > 0 || ds.stable,
-            "a save was recorded or a nat 20 stabilized"
+            ds.successes + ds.failures > 0 || ds.stable || hp_after > hp_before,
+            "a save was recorded, a nat 20 revived, or stabilized"
         );
         cx.simulate_keystrokes(window.into(), "S"); // shift-S long rest
         cx.run_until_parked();
