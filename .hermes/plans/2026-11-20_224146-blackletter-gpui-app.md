@@ -198,6 +198,24 @@ Phase gate: a real Level-1 sheet can be edited end-to-end; SRD spot-checks again
 
 ---
 
+### Task 4.3 — Custom-content library (two-source content)
+**Why before the wizard (user ruling 2026-11-23):** content is not only SRD. Keep two
+databases side by side: the vendored read-only SRD corpus, and a **persistent custom
+library** the user builds in-app. Everything added must be cached on disk and show up
+in every picker/flow from then on.
+- `blackletter_types::library::Library`: custom spells/items/feats/races/backgrounds/
+  features/traits keyed by name, using the sheet's own homebrew-friendly types;
+  serde JSON at `$XDG_CONFIG_HOME/blackletter/library.json`, saved on every change.
+- Pickers merge both sources; custom rows carry index `custom:<name>` and a
+  `[custom]` tag; `apply_pick` routes on the prefix.
+- `Form` component (picker-shaped): labeled rows + shared Field; `+ new spell/item/
+  feat/feature/trait` rows in the sheet sections create custom entries.
+- **DEFERRED — scraping pipeline:** the user has an unfinished wiki-scraper +
+  LLM-parse system (pattern: `~/Documents/Coding/Rust/night/web-scraper` — fextralife
+  wiki scraper, not D&D-specific) meant to pull non-SRD spells from a wiki and have an
+  LLM parse them into structured entries. Parked; the Library is its landing zone —
+  scraped entries are just custom entries. Revisit after Phase 5.
+
 ## Phase 5 — Character creation wizard + level-up
 
 ### Task 5.1 — New-character wizard
