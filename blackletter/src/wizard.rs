@@ -51,7 +51,7 @@ actions!(
 #[must_use]
 pub fn wizard_keys() -> Vec<KeyBinding> {
     let ctx = Some(WIZARD_CTX);
-    let mut kb = vec![
+    let kb = vec![
         KeyBinding::new("enter", WizardNext, ctx),
         KeyBinding::new("shift-enter", WizardBack, ctx),
         KeyBinding::new("up", WizardUp, ctx),
