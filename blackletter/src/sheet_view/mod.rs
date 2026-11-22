@@ -8,12 +8,14 @@
 mod doc;
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use blackletter_types::{
     Item, Score,
     class::CastingMechanic,
     condition::{Condition, ConditionKind},
     damage::DamageType,
+    database::corpus::Corpus,
     roll::Advantage,
     skills::Skill,
 };
@@ -25,6 +27,7 @@ use gpui::{
 pub use doc::SheetDoc;
 
 use crate::field::{Field, FieldElement, FieldOwner};
+use crate::picker::{PickKind, Picker, PickerOutcome};
 use crate::root::RootView;
 
 pub const SHEET_CTX: &str = "Sheet";
@@ -52,6 +55,7 @@ actions!(
         TraySave,
         TrayCheck,
         TrayDamage,
+        OpenPicker,
     ]
 );
 
@@ -85,6 +89,7 @@ pub fn keybindings() -> Vec<KeyBinding> {
         "v" => TraySave,
         "c" => TrayCheck,
         "x" => TrayDamage,
+        "/" => OpenPicker,
         "ctrl-z" => Undo,
         "ctrl-shift-z" => Redo,
         "ctrl-s" => Save,
@@ -195,6 +200,8 @@ pub struct SheetView {
     doc: SheetDoc,
     /// The campaign's `characters/` dir for first-saves of new sheets.
     characters_dir: Option<PathBuf>,
+    /// The SRD corpus for the pickers (plan Task 4.2); `None` disables them.
+    corpus: Option<Arc<Corpus>>,
     root: WeakEntity<RootView>,
     section: Section,
     focus_handle: FocusHandle,
@@ -205,6 +212,8 @@ pub struct SheetView {
     /// Damage type the quick-damage keys cycle through (for resistances).
     damage_type: DamageType,
     field: Option<(FieldTarget, Field)>,
+    /// The open SRD picker overlay, if any.
+    picker: Option<Entity<Picker>>,
     /// Dice-tray result log, newest first (max 5).
     roll_log: Vec<String>,
     blank: Field,
@@ -214,12 +223,14 @@ impl SheetView {
     pub fn new(
         doc: SheetDoc,
         characters_dir: Option<PathBuf>,
+        corpus: Option<Arc<Corpus>>,
         root: WeakEntity<RootView>,
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
             doc,
             characters_dir,
+            corpus,
             root,
             section: Section::Basic,
             focus_handle: cx.focus_handle(),
@@ -227,6 +238,7 @@ impl SheetView {
             sel: 0,
             damage_type: DamageType::Bludgeoning,
             field: None,
+            picker: None,
             roll_log: Vec::new(),
             blank: Field::new(""),
         }
@@ -680,14 +692,14 @@ impl SheetView {
     }
 
     /// space: activate the selected row (skills/saves toggles, combat actions).
-    fn on_toggle_row(&mut self, _: &ToggleRow, _: &mut Window, cx: &mut Context<Self>) {
+    fn on_toggle_row(&mut self, _: &ToggleRow, window: &mut Window, cx: &mut Context<Self>) {
         match self.section {
             Section::Skills => self.toggle_skill_or_save(cx),
             Section::Combat => self.combat_activate(cx),
             Section::Spells => self.toggle_spell_row(cx),
             Section::Conditions => self.toggle_condition_row(cx),
             Section::Inventory => self.toggle_item_row(cx),
-            Section::Features => self.remove_grant_row(cx),
+            Section::Features => self.grant_activate(window, cx),
             _ => {}
         }
         cx.notify();
@@ -935,6 +947,179 @@ impl SheetView {
         }
     }
 
+    // ---- SRD pickers (plan Task 4.2) ----
+
+    /// Which picker `/` opens from each section.
+    fn kind_for_section(section: Section) -> Option<PickKind> {
+        match section {
+            Section::Basic => Some(PickKind::Race),
+            Section::Spells => Some(PickKind::Spell),
+            Section::Inventory => Some(PickKind::Item),
+            Section::Features => Some(PickKind::Feat),
+            _ => None,
+        }
+    }
+
+    fn on_open_picker(&mut self, _: &OpenPicker, window: &mut Window, cx: &mut Context<Self>) {
+        match Self::kind_for_section(self.section) {
+            Some(kind) => self.open_picker(kind, window, cx),
+            None => self.report("no SRD picker in this section", cx),
+        }
+    }
+
+    fn open_picker(&mut self, kind: PickKind, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(corpus) = self.corpus.clone() else {
+            self.report("SRD corpus not found — pickers disabled", cx);
+            return;
+        };
+        let sheet = cx.entity().downgrade();
+        let picker = cx.new(|cx| {
+            Picker::new(
+                kind,
+                corpus,
+                move |outcome, window, cx| {
+                    sheet
+                        .update(cx, |v, cx| v.on_pick(kind, outcome, window, cx))
+                        .ok();
+                },
+                cx,
+            )
+        });
+        self.picker = Some(picker.clone());
+        window.focus(&picker.read(cx).focus_handle(cx), cx);
+        self.report(
+            "picker: type to filter, up/down move, enter picks, esc closes",
+            cx,
+        );
+        cx.notify();
+    }
+
+    /// The picker's answer: dismiss it, refocus the sheet, apply the choice.
+    fn on_pick(
+        &mut self,
+        kind: PickKind,
+        outcome: PickerOutcome,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.picker = None;
+        window.focus(&self.focus_handle, cx);
+        match outcome {
+            PickerOutcome::Chosen(index) => self.apply_pick(kind, &index, cx),
+            PickerOutcome::Cancelled => self.report("picker closed", cx),
+        }
+        cx.notify();
+    }
+
+    /// Import the picked corpus entry into the sheet through the engine's
+    /// conversions, reporting success and failure to the status bar.
+    fn apply_pick(&mut self, kind: PickKind, index: &str, cx: &mut Context<Self>) {
+        let Some(corpus) = self.corpus.clone() else {
+            return;
+        };
+        let srd = || blackletter_types::sheet::source::Source::Single("SRD (2014)".into());
+        match kind {
+            PickKind::Spell => {
+                let Some(db) = corpus.spell(index).cloned() else {
+                    self.report("corpus entry vanished", cx);
+                    return;
+                };
+                let outcome = self.doc.try_edit(|c| {
+                    let sp =
+                        blackletter_types::sheet::spells::Spell::try_from_database(db.clone(), c)?;
+                    let name = sp.name.clone();
+                    if c.spells.spells.insert(name.clone(), sp).is_some() {
+                        anyhow::bail!("{name} is already in the spellbook");
+                    }
+                    Ok(name)
+                });
+                match outcome {
+                    Ok(name) => self.report(format!("added {name} to the spellbook"), cx),
+                    Err(e) => self.report(format!("could not add spell: {e}"), cx),
+                }
+            }
+            PickKind::Item => {
+                let Some(eq) = corpus.item(index).cloned() else {
+                    self.report("corpus entry vanished", cx);
+                    return;
+                };
+                let outcome = self.doc.try_edit(|c| {
+                    let item = Item::try_from_database(eq.clone())?;
+                    let name = item.name.clone();
+                    if c.inventory.0.insert(name.clone(), item).is_some() {
+                        anyhow::bail!("{name} is already in the inventory");
+                    }
+                    Ok(name)
+                });
+                match outcome {
+                    Ok(name) => self.report(format!("added {name} to the inventory"), cx),
+                    Err(e) => self.report(format!("could not add item: {e}"), cx),
+                }
+            }
+            PickKind::Feat => {
+                let Some(db) = corpus.feats.iter().find(|f| f.index == index).cloned() else {
+                    self.report("corpus entry vanished", cx);
+                    return;
+                };
+                let feat = blackletter_types::sheet::feat::Feat::try_from_database(db);
+                let name = feat.name.clone();
+                if self.doc.character.has_grant(&name) {
+                    self.report(format!("{name} already granted"), cx);
+                    return;
+                }
+                self.doc.edit(|c| c.add_feat(feat));
+                self.report(format!("added feat {name}"), cx);
+            }
+            PickKind::Race => {
+                let Some(db) = corpus.races.iter().find(|r| r.index == index).cloned() else {
+                    self.report("corpus entry vanished", cx);
+                    return;
+                };
+                let race = blackletter_types::sheet::race::Race::try_from_database(db);
+                let name = race.name.clone();
+                self.doc.edit(|c| c.race = Some(race));
+                self.report(format!("race set to {name}"), cx);
+            }
+            PickKind::Trait => {
+                let Some(db) = corpus.traits.iter().find(|t| t.index == index).cloned() else {
+                    self.report("corpus entry vanished", cx);
+                    return;
+                };
+                let tr = blackletter_types::sheet::traits::Trait {
+                    name: db.name.clone(),
+                    desc: db.desc.join("\n\n"),
+                    feature: None,
+                    source: Some(srd()),
+                };
+                let name = tr.name.clone();
+                if self.doc.character.has_grant(&name) {
+                    self.report(format!("{name} already granted"), cx);
+                    return;
+                }
+                self.doc.edit(|c| c.add_trait(tr));
+                self.report(format!("added trait {name}"), cx);
+            }
+            PickKind::Feature => {
+                let Some(db) = corpus.feature(index).cloned() else {
+                    self.report("corpus entry vanished", cx);
+                    return;
+                };
+                let feat = blackletter_types::feature::Feature {
+                    name: db.name.clone(),
+                    source: Some(srd()),
+                    effects: vec![],
+                };
+                let name = feat.name.clone();
+                if self.doc.character.has_grant(&name) {
+                    self.report(format!("{name} already granted"), cx);
+                    return;
+                }
+                self.doc.edit(|c| c.add_feature(feat));
+                self.report(format!("added feature {name}"), cx);
+            }
+        }
+    }
+
     fn on_undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
         if self.doc.undo() {
             self.report("undo", cx);
@@ -1021,7 +1206,7 @@ impl SheetView {
                     .mt_2()
                     .text_xs()
                     .text_color(gpui::rgb(0x6c_70_86))
-                    .child("[]: sections\nj/k: class  +/-: level\nenter: name  ctrl-s: save"),
+                    .child("[]: sections\nj/k: class  +/-: level\nenter: name  /: SRD picker\nctrl-s: save"),
             )
     }
 
@@ -1492,7 +1677,9 @@ impl SheetView {
                     .mt_2()
                     .text_sm()
                     .text_color(gpui::rgb(0x6c_70_86))
-                    .child("j/k select  space spend-slot/toggle-prepared  t cast"),
+                    .child(
+                        "j/k select  space spend-slot/toggle-prepared  t cast\n/: add spell (SRD)",
+                    ),
             )
             .into_any_element()
     }
@@ -1734,7 +1921,7 @@ impl SheetView {
                     .text_sm()
                     .text_color(gpui::rgb(0x6c_70_86))
                     .child(
-                        "j/k select  space equip/unequip  +/- quantity\n(- to 0 removes the item)",
+                        "j/k select  space equip/unequip  +/- quantity\n(- to 0 removes the item)   /: SRD item picker",
                     ),
             )
             .into_any_element()
@@ -1807,6 +1994,7 @@ impl SheetView {
     }
 
     fn features_section(&self, cx: &mut Context<Self>) -> AnyElement {
+        let grants = self.grant_rows().len();
         let rows: Vec<_> = self
             .grant_rows()
             .into_iter()
@@ -1826,14 +2014,29 @@ impl SheetView {
             .gap_0()
             .p_2()
             .children(rows)
+            .child(self.row(grants, "+ add feat (SRD picker)".into(), cx))
+            .child(self.row(grants + 1, "+ add feature (SRD picker)".into(), cx))
+            .child(self.row(grants + 2, "+ add trait (SRD picker)".into(), cx))
             .child(
                 div()
                     .mt_2()
                     .text_sm()
                     .text_color(gpui::rgb(0x6c_70_86))
-                    .child("j/k select  space removes the grant (ctrl-z undoes)"),
+                    .child(
+                        "j/k select  space removes the grant (ctrl-z undoes)\nadd rows: space opens the SRD picker",
+                    ),
             )
             .into_any_element()
+    }
+
+    fn grant_activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let grants = self.grant_rows().len();
+        match self.sel {
+            s if s == grants => self.open_picker(PickKind::Feat, window, cx),
+            s if s == grants + 1 => self.open_picker(PickKind::Feature, window, cx),
+            s if s == grants + 2 => self.open_picker(PickKind::Trait, window, cx),
+            _ => self.remove_grant_row(cx),
+        }
     }
 
     fn remove_grant_row(&mut self, cx: &mut Context<Self>) {
@@ -2117,9 +2320,15 @@ impl Focusable for SheetView {
 impl Render for SheetView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let field_active = self.field.is_some();
+        let picker_open = self.picker.is_some();
         div()
             .track_focus(&self.focus_handle)
-            .key_context(if field_active {
+            // While the picker is open its context replaces SHEET_CTX at the
+            // root too: printable keys bound in SHEET_CTX (`a`, `d`, `r`)
+            // would otherwise steal keystrokes from the picker's field.
+            .key_context(if picker_open {
+                crate::picker::PICKER_CTX
+            } else if field_active {
                 crate::dungeon_view::FIELD_CTX
             } else {
                 SHEET_CTX
@@ -2150,6 +2359,7 @@ impl Render for SheetView {
             .on_action(cx.listener(Self::on_tray_save))
             .on_action(cx.listener(Self::on_tray_check))
             .on_action(cx.listener(Self::on_tray_damage))
+            .on_action(cx.listener(Self::on_open_picker))
             .child(self.nav(cx))
             .child(
                 div()
@@ -2170,17 +2380,76 @@ impl Render for SheetView {
                     .child(self.tray(cx)),
             )
             .child(self.summary())
+            .when(field_active, |this| {
+                let this = crate::field_key_actions!(this, cx, after_sheet_field_change);
+                this.on_action(
+                    cx.listener(|this, _: &crate::field::FieldBackspace, _, cx| {
+                        if let Some((_, f)) = this.field.as_mut() {
+                            f.backspace();
+                            cx.notify();
+                        }
+                    }),
+                )
+                .on_action(cx.listener(|this, _: &crate::field::FieldDelete, _, cx| {
+                    if let Some((_, f)) = this.field.as_mut() {
+                        f.delete_forward();
+                        cx.notify();
+                    }
+                }))
+                .on_action(
+                    cx.listener(|this, _: &crate::field::FieldDeleteWordBack, _, cx| {
+                        if let Some((_, f)) = this.field.as_mut() {
+                            f.delete_word_back();
+                            cx.notify();
+                        }
+                    }),
+                )
+                .on_action(cx.listener(|this, _: &crate::field::FieldLeft, _, cx| {
+                    if let Some((_, f)) = this.field.as_mut() {
+                        f.step_caret(-1);
+                        cx.notify();
+                    }
+                }))
+                .on_action(cx.listener(
+                    |this, _: &crate::field::FieldRight, _, cx| {
+                        if let Some((_, f)) = this.field.as_mut() {
+                            f.step_caret(1);
+                            cx.notify();
+                        }
+                    },
+                ))
+            })
+            // The SRD picker paints last over a dim scrim, centered: the
+            // scrim says "modal", the centering says what it belongs to.
+            .when_some(self.picker.clone(), |d, p| {
+                d.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .bg(gpui::hsla(0., 0., 0., 0.45))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .pt(gpui::px(56.))
+                        .child(p),
+                )
+            })
     }
 }
+
+/// `$after` hook for `field_key_actions!`: cut/paste change the text, but
+/// sheet fields only commit on submit, so there is nothing to recompute.
+pub fn after_sheet_field_change(_v: &mut SheetView, _cx: &mut Context<SheetView>) {}
 
 /// Constructor used by the root view.
 pub fn build(
     doc: SheetDoc,
     characters_dir: Option<PathBuf>,
+    corpus: Option<Arc<Corpus>>,
     root: WeakEntity<RootView>,
     cx: &mut Context<RootView>,
 ) -> Entity<SheetView> {
-    cx.new(|cx| SheetView::new(doc, characters_dir, root, cx))
+    cx.new(|cx| SheetView::new(doc, characters_dir, corpus, root, cx))
 }
 
 #[cfg(test)]
@@ -2191,13 +2460,28 @@ mod tests {
     use gpui::{Entity, TestAppContext, WindowHandle};
 
     fn open_sheet(cx: &mut TestAppContext) -> (WindowHandle<RootView>, Entity<RootView>) {
+        open_sheet_with(cx, None)
+    }
+
+    fn test_corpus() -> Arc<Corpus> {
+        use blackletter_types::database::reference::Edition;
+        // The corpus is vendored in-repo under `srd/`.
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../srd/2014/en");
+        Arc::new(Corpus::load(&dir, Edition::Y2014).expect("vendored corpus loads"))
+    }
+
+    fn open_sheet_with(
+        cx: &mut TestAppContext,
+        corpus: Option<Arc<Corpus>>,
+    ) -> (WindowHandle<RootView>, Entity<RootView>) {
         cx.update(|cx| {
             cx.bind_keys(crate::root::keybindings());
             cx.bind_keys(keybindings());
             cx.bind_keys(crate::field::field_keys(crate::dungeon_view::FIELD_CTX));
+            cx.bind_keys(crate::picker::picker_keys());
             Autosave::init(cx);
         });
-        let window = cx.add_window(|_, cx| RootView::new(cx, Session::default(), None));
+        let window = cx.add_window(|_, cx| RootView::new(cx, Session::default(), None, corpus));
         window
             .update(cx, |view, window, cx| window.focus(view.focus_handle(), cx))
             .unwrap();
@@ -2657,5 +2941,138 @@ mod tests {
         cx.simulate_keystrokes(window.into(), "[");
         cx.run_until_parked();
         assert_eq!(cx.read(|cx| view.read(cx).section()), Section::Abilities);
+    }
+
+    // ---- SRD pickers (plan Task 4.2) ----
+
+    #[gpui::test]
+    fn sheet_field_backspace_edits_the_prompt(cx: &mut TestAppContext) {
+        let (window, root) = open_sheet(cx);
+        let view = sheet(cx, &root);
+        cx.simulate_keystrokes(window.into(), "] ] ]"); // Combat
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "d"); // damage prompt
+        cx.run_until_parked();
+        cx.simulate_input(window.into(), "45");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "backspace"); // "45" -> "4"
+        cx.run_until_parked();
+        let hp0 = cx.read(|cx| view.read(cx).doc().character.health.current);
+        cx.simulate_keystrokes(window.into(), "enter");
+        cx.run_until_parked();
+        let hp1 = cx.read(|cx| view.read(cx).doc().character.health.current);
+        assert_eq!(hp0 - hp1, 4, "backspace must edit the field before commit");
+    }
+
+    #[gpui::test]
+    fn spell_picker_adds_a_spell_via_the_conversion(cx: &mut TestAppContext) {
+        let (window, root) = open_sheet_with(cx, Some(test_corpus()));
+        let view = sheet(cx, &root);
+        cx.simulate_keystrokes(window.into(), "] ] ] ]"); // Spells
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "/");
+        cx.run_until_parked();
+        assert!(
+            cx.read(|cx| view.read(cx).picker.is_some()),
+            "/ opens the spell picker"
+        );
+        cx.simulate_input(window.into(), "water walk");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "enter");
+        cx.run_until_parked();
+        let spells = cx.read(|cx| {
+            view.read(cx)
+                .doc()
+                .character
+                .spells
+                .spells
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+        });
+        assert!(
+            spells.iter().any(|s| s == "Water Walk"),
+            "Water Walk must be in the spellbook: {spells:?}"
+        );
+        assert!(
+            cx.read(|cx| view.read(cx).picker.is_none()),
+            "picker dismisses after picking"
+        );
+    }
+
+    #[gpui::test]
+    fn race_picker_sets_typed_race_fields_from_the_srd(cx: &mut TestAppContext) {
+        let (window, root) = open_sheet_with(cx, Some(test_corpus()));
+        let view = sheet(cx, &root);
+        cx.simulate_keystrokes(window.into(), "/"); // Basic -> race
+        cx.run_until_parked();
+        cx.simulate_input(window.into(), "dwarf");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "enter");
+        cx.run_until_parked();
+        let race = cx.read(|cx| view.read(cx).doc().character.race.clone());
+        let race = race.expect("race set from the picker");
+        assert_eq!(race.name, "Dwarf");
+        assert_eq!(race.speed, Some(25));
+        assert!(
+            race.ability_bonuses
+                .iter()
+                .any(|b| b.score == Score::Con && b.bonus == 2),
+            "Dwarf carries its typed CON bonus"
+        );
+    }
+
+    #[gpui::test]
+    fn picker_escape_cancels_without_touching_the_sheet(cx: &mut TestAppContext) {
+        let (window, root) = open_sheet_with(cx, Some(test_corpus()));
+        let view = sheet(cx, &root);
+        cx.simulate_keystrokes(window.into(), "/");
+        cx.run_until_parked();
+        cx.simulate_input(window.into(), "dwarf");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "escape");
+        cx.run_until_parked();
+        assert!(cx.read(|cx| view.read(cx).picker.is_none()));
+        // The fresh sheet's default Elf race is untouched (no Dwarf import).
+        assert_eq!(
+            cx.read(|cx| {
+                view.read(cx)
+                    .doc()
+                    .character
+                    .race
+                    .as_ref()
+                    .map(|r| r.name.clone())
+            }),
+            Some("Elf".to_string())
+        );
+        // Focus returns to the sheet: a sheet chord still works.
+        cx.simulate_keystrokes(window.into(), "]");
+        cx.run_until_parked();
+        assert_eq!(cx.read(|cx| view.read(cx).section()), Section::Abilities);
+    }
+
+    #[gpui::test]
+    fn inventory_picker_adds_an_srd_item(cx: &mut TestAppContext) {
+        let (window, root) = open_sheet_with(cx, Some(test_corpus()));
+        let view = sheet(cx, &root);
+        cx.simulate_keystrokes(window.into(), "] ] ] ] ]"); // Inventory
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "/");
+        cx.run_until_parked();
+        cx.simulate_input(window.into(), "flail");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "enter");
+        cx.run_until_parked();
+        let items = cx.read(|cx| {
+            view.read(cx)
+                .doc()
+                .character
+                .inventory
+                .0
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+        });
+        assert!(items.iter().any(|i| i == "Flail"), "items: {items:?}");
     }
 }

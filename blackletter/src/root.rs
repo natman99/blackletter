@@ -12,7 +12,9 @@ use crate::autosave::Autosave;
 use crate::dungeon_view::{self, DungeonDoc, DungeonView};
 use crate::session::Session;
 use crate::sheet_view::{self, SheetDoc, SheetView};
+use blackletter_types::database::corpus::Corpus;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 actions!(
     blackletter,
@@ -52,19 +54,32 @@ pub struct RootView {
     focus_handle: FocusHandle,
     session: Session,
     session_path: Option<PathBuf>,
+    /// The SRD corpus, loaded once at startup; `None` disables the pickers.
+    corpus: Option<Arc<Corpus>>,
     dungeon: Option<Entity<DungeonView>>,
     sheet: Option<Entity<SheetView>>,
 }
 
 impl RootView {
-    pub fn new(cx: &gpui::App, session: Session, session_path: Option<PathBuf>) -> Self {
+    pub fn new(
+        cx: &gpui::App,
+        session: Session,
+        session_path: Option<PathBuf>,
+        corpus: Option<Arc<Corpus>>,
+    ) -> Self {
         let mode = session.mode.into();
+        let status = if corpus.is_some() {
+            None
+        } else {
+            Some("SRD corpus not found — pickers disabled".into())
+        };
         Self {
             mode,
-            status: None,
+            status,
             focus_handle: cx.focus_handle(),
             session,
             session_path,
+            corpus,
             dungeon: None,
             sheet: None,
         }
@@ -122,7 +137,7 @@ impl RootView {
     fn build_sheet(&mut self, cx: &mut Context<Self>) -> Entity<SheetView> {
         let (doc, dir) = self.sheet_doc_or_new();
         let root = cx.entity().downgrade();
-        let view = sheet_view::build(doc, dir.clone(), root, cx);
+        let view = sheet_view::build(doc, dir.clone(), self.corpus.clone(), root, cx);
         let weak = view.downgrade();
         let id = view.entity_id();
         cx.global_mut::<Autosave>().register(
@@ -194,7 +209,7 @@ impl RootView {
         cx: &mut Context<Self>,
     ) -> Entity<SheetView> {
         let root = cx.entity().downgrade();
-        let view = sheet_view::build(doc, dir, root, cx);
+        let view = sheet_view::build(doc, dir, self.corpus.clone(), root, cx);
         let weak = view.downgrade();
         let id = view.entity_id();
         cx.global_mut::<Autosave>().register(
@@ -480,7 +495,7 @@ mod tests {
             cx.bind_keys(keybindings());
             crate::autosave::Autosave::init(cx);
         });
-        let window = cx.add_window(|_, cx| RootView::new(cx, Session::default(), None));
+        let window = cx.add_window(|_, cx| RootView::new(cx, Session::default(), None, None));
         window
             .update(cx, |view, window, cx| window.focus(&view.focus_handle, cx))
             .unwrap();
@@ -514,7 +529,7 @@ mod tests {
             crate::autosave::Autosave::init(cx);
         });
         let window =
-            cx.add_window(|_, cx| RootView::new(cx, Session::default(), Some(path.clone())));
+            cx.add_window(|_, cx| RootView::new(cx, Session::default(), Some(path.clone()), None));
         window
             .update(cx, |view, window, cx| window.focus(&view.focus_handle, cx))
             .unwrap();

@@ -1410,7 +1410,7 @@ mod tests {
             cx.bind_keys(crate::field::field_keys(FIELD_CTX));
             crate::autosave::Autosave::init(cx);
         });
-        let window = cx.add_window(|_, cx| RootView::new(cx, Session::default(), None));
+        let window = cx.add_window(|_, cx| RootView::new(cx, Session::default(), None, None));
         window
             .update(cx, |view, window, cx| window.focus(view.focus_handle(), cx))
             .unwrap();

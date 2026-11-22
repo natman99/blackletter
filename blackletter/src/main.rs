@@ -5,6 +5,7 @@ mod campaign;
 mod dungeon_view;
 mod field;
 mod files;
+mod picker;
 mod root;
 mod session;
 mod sheet_view;
@@ -26,7 +27,13 @@ fn main() {
         cx.bind_keys(dungeon_view::keybindings());
         cx.bind_keys(sheet_view::keybindings());
         cx.bind_keys(field::field_keys(dungeon_view::FIELD_CTX));
+        cx.bind_keys(picker::picker_keys());
         autosave::Autosave::init(cx);
+        // The SRD corpus loads once at startup (vendored `srd/`, see Task
+        // 4.1); a missing corpus only disables the pickers, never the app.
+        let corpus = blackletter_types::database::corpus::Corpus::load_vendored()
+            .ok()
+            .map(std::sync::Arc::new);
         let window = match cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
@@ -40,7 +47,7 @@ fn main() {
                 }),
                 ..Default::default()
             },
-            |_, cx| cx.new(|cx| RootView::new(cx, session, session_path)),
+            |_, cx| cx.new(|cx| RootView::new(cx, session, session_path, corpus)),
         ) {
             Ok(w) => w,
             Err(e) => {
