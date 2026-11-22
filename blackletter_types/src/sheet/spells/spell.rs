@@ -392,7 +392,7 @@ mod tests {
     #[cfg(feature = "serde")]
     #[test]
     fn test_spell_from() {
-        let path = "../5e-database/src/2014/en/5e-SRD-Spells.json";
+        let path = "../srd/2014/en/5e-SRD-Spells.json";
 
         let s = fs::read_to_string(path).unwrap();
         let spells: Vec<DatabaseSpell> = serde_json::from_str(&s).unwrap();
@@ -410,7 +410,7 @@ mod tests {
     fn test_cantrip_damage_scales_with_total_level() {
         use crate::class::{Class, ClassType, Level};
 
-        let path = "../5e-database/src/2014/en/5e-SRD-Spells.json";
+        let path = "../srd/2014/en/5e-SRD-Spells.json";
         let s = fs::read_to_string(path).unwrap();
         let spells: Vec<DatabaseSpell> = serde_json::from_str(&s).unwrap();
         let firebolt = spells

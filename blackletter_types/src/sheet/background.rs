@@ -120,7 +120,7 @@ mod tests {
     fn srd() -> Vec<crate::database::background::Background> {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../5e-database/src/2014/en/5e-SRD-Backgrounds.json"
+            "/../srd/2014/en/5e-SRD-Backgrounds.json"
         );
         let text = std::fs::read_to_string(path).expect("vendored SRD backgrounds");
         serde_json::from_str(&text).unwrap()

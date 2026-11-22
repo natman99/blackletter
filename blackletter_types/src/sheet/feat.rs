@@ -45,6 +45,18 @@ impl HasSource for Feat {
 }
 
 impl Feat {
+    /// Convert a raw SRD feat. Mechanical effects are not parsed from
+    /// prose — the sheet's Feature stays for the table to attach.
+    #[cfg(feature = "serde")]
+    pub fn try_from_database(value: crate::database::feat::DatabaseFeat) -> Self {
+        Self {
+            name: value.name,
+            desc: value.desc.join("\n"),
+            feature: None,
+            source: None,
+        }
+    }
+
     /// The effects this feat grants (its wrapped feature, if any).
     #[must_use]
     pub fn effects(&self) -> &[Effect] {

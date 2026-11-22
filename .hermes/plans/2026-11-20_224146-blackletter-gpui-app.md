@@ -178,7 +178,14 @@ Phase gate: a real Level-1 sheet can be edited end-to-end; SRD spot-checks again
 
 ## Phase 4 — SRD browser + pickers
 
-### Task 4.1 — Corpus loader
+### Task 4.1 — Corpus loader — DONE
+- `blackletter_types/src/database/corpus.rs`: `Corpus::load(dir, edition)` + `load_vendored()` (env `BLACKLETTER_SRD_DIR`, then in-repo `srd/2014/en`, then dev clone `5e-database/src/2014/en`). Indexed: `has_index`, `item/feature/spell`, `levels_for(class, subclass?)`.
+- **Corpus is vendored in-repo under `srd/2014/en/`** (15 SRD JSONs, 2.3MB) — user rule 2026-11-22: committed code/tests must never reference files outside the project; dev clones stay gitignored.
+- New raw shapes: item (Equipment w/ ArmorClass map + ContentEntry packs), feat, level (spellcasting progression), feature (reference is obj-or-url untagged), subclass, lean class (old generated class.rs never compiled vs real JSON; unused, replaced).
+- Conversions: `Item::try_from_database` (name/desc/damage roll), `Feat::try_from_database` (prose only; Feature stays manual).
+- Tests: all tables load; every Levels 1-20 feature reference resolves for every class; sorcerer L5 slots cross-check engine math; club/grappler conversions. All read in-repo `srd/`.
+- Also fixed: latent JsonSchema derives in database/{spell,generic}.rs broke serde-without-schema builds (cfg_attr now); all pre-existing external paths (scripting include_str!, cli data.rs, spell/background tests) repointed to `srd/`; examples take explicit path args.
+- Original spec:
 - `blackletter/src/srd.rs` (or `blackletter_srd` lib module): load vendored `5e-database/src/2014/en/5e-SRD-*.json` at startup into indexed in-memory tables (spells, items, feats, races, subraces, classes, subclasses, backgrounds, features, traits, **levels**). **Edition-tag every entry; default 2014** (user's table rulings are 2014; never let 2024 leak untagged — blackletter skill data rule). One canonical corpus: vendored 5e-database, NOT Open5e (slug-map idea deferred).
 - **`5e-SRD-Levels.json` is the level-up backbone:** it maps class × subclass × level → feature/spell grants (`class_levels` on Classes too). The wizard and level-up flow read these tables instead of hand-coding PHB grant lists — the engine's `class.rs` PHB tables stay for slot/PB math; feature grants come from the corpus. Verify coverage per class with a test that walks levels 1–20 and asserts every `feature` reference resolves in `5e-SRD-Features.json`.
 - `blackletter_types` may need `try_from_database` conversions for items/feats/races/classes/backgrounds (spells already have `Spell::try_from_database`). Add conversions in `blackletter_types` with tests, not in the app.

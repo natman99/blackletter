@@ -198,10 +198,16 @@ fn main() {
     c.sync_proficiency_bonus();
     c.sync_spell_slots();
 
-    let path =
-        std::path::Path::new("/home/nat/Documents/Campaign/characters/Aldric Underwood.json");
+    // Output path is an explicit argument — nothing in this repo may
+    // reference files outside it. Point it at your campaign's
+    // characters/ dir when you want the app to load the fixture.
+    let Some(out) = std::env::args().nth(1) else {
+        eprintln!("usage: make_aldric <out/sheet.json>");
+        std::process::exit(2);
+    };
+    let path = std::path::PathBuf::from(out);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, serde_json::to_string_pretty(&c).unwrap()).unwrap();
+    std::fs::write(&path, serde_json::to_string_pretty(&c).unwrap()).unwrap();
 
     // Sanity: derived numbers vs the note.
     println!("wrote {}", path.display());

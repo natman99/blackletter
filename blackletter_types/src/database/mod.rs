@@ -1,8 +1,20 @@
 /// Structs to read 5e-database from dnd srd api.
-// pub mod class;
 #[cfg(feature = "serde")]
 pub mod background;
+#[cfg(feature = "serde")]
+pub mod class;
 pub mod condition;
+#[cfg(feature = "serde")]
+pub mod corpus;
+pub mod feat;
+pub mod feature;
+#[cfg(feature = "serde")]
+pub mod item;
+#[cfg(feature = "serde")]
+pub mod level;
+pub mod reference;
+#[cfg(feature = "serde")]
+pub mod subclass;
 
 #[cfg(feature = "serde")]
 pub mod generic;

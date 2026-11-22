@@ -56,6 +56,36 @@ impl Default for Item {
 }
 
 impl Item {
+    /// Convert a raw SRD equipment entry into a sheet item: name, joined
+    /// description, and the damage roll when the entry has one.
+    #[cfg(feature = "serde")]
+    pub fn try_from_database(value: crate::database::item::Equipment) -> anyhow::Result<Self> {
+        use std::str::FromStr;
+        let roll = value
+            .damage
+            .as_ref()
+            .and_then(|d| d.damage_dice.as_ref())
+            .map(|dice| Roll::from_str(dice))
+            .transpose()?;
+        let mut description = value.desc.join("\n");
+        if !value.special.is_empty() {
+            if !description.is_empty() {
+                description.push('\n');
+            }
+            description.push_str(&value.special.join("\n"));
+        }
+        Ok(Self {
+            name: value.name,
+            description,
+            quantity: 1,
+            roll,
+            to_hit: None,
+            source: None,
+            feature: None,
+            equipped: false,
+        })
+    }
+
     pub fn with_roll(mut self, roll: Roll) -> Self {
         self.roll = Some(roll);
         self

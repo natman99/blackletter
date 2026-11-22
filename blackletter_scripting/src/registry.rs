@@ -12,8 +12,8 @@ use rig::{
 };
 use scraper::{Html, Selector};
 
-const CONDITIONS: &str = include_str!("../../5e-database/src/2014/en/5e-SRD-Conditions.json");
-const SPELLS: &str = include_str!("../../5e-database/src/2014/en/5e-SRD-Spells.json");
+const CONDITIONS: &str = include_str!("../../srd/2014/en/5e-SRD-Conditions.json");
+const SPELLS: &str = include_str!("../../srd/2014/en/5e-SRD-Spells.json");
 
 const PREAMBLE: &str = "You are a D&D 5e expert. Take the provided information and return **only** valid json according to the schema provided";
 const MAX_RETRIES: u32 = 6;
