@@ -212,11 +212,14 @@ in every picker/flow from then on.
   Inventory/Features section opens the add-menu; ctrl-s inserts into the library
   entity and writes the JSON file immediately. Custom races intentionally not
   form-creatable (flat form is the wrong shape for bonuses/traits/languages).
-- **DEFERRED — scraping pipeline:** the user has an unfinished wiki-scraper +
-  LLM-parse system (pattern: `~/Documents/Coding/Rust/night/web-scraper` — fextralife
-  wiki scraper, not D&D-specific) meant to pull non-SRD spells from a wiki and have an
-  LLM parse them into structured entries. Parked; the Library is its landing zone —
-  scraped entries are just custom entries. Revisit after Phase 5.
+- **DEFERRED — scraping pipeline (user pointed at it 2026-11-23):** it lives IN
+  THIS REPO at `blackletter_scripting/src/registry.rs` — `scrape_websites(name)`
+  fetches `dnd5e.wikidot.com/spell:<name>` and extracts `#page-content`; `ask_llm`
+  runs a rig OpenAI-compatible agent (any base_url — local gateway works) against
+  `schemars::schema_for!(Spell)` with a 6-retry parse-error-feedback loop. Its output
+  is a `sheet::Spell` — exactly the Library entry type — so the only missing tail is
+  a caller that inserts the result into `Library` + saves. Parked until after
+  Phase 5; the Library is its landing zone.
 
 ## Phase 5 — Character creation wizard + level-up
 
