@@ -12,6 +12,7 @@ pub mod feature;
 pub mod item;
 #[cfg(feature = "serde")]
 pub mod level;
+pub mod options;
 pub mod reference;
 #[cfg(feature = "serde")]
 pub mod subclass;

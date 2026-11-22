@@ -156,6 +156,36 @@ impl Corpus {
         self.spells.iter().find(|e| e.index == index)
     }
 
+    pub fn class(&self, index: &str) -> Option<&DatabaseClass> {
+        self.classes.iter().find(|c| c.index == index)
+    }
+
+    pub fn race(&self, index: &str) -> Option<&super::race::Race> {
+        self.races.iter().find(|r| r.index == index)
+    }
+
+    pub fn subrace(&self, index: &str) -> Option<&super::race::Subrace> {
+        self.subraces.iter().find(|r| r.index == index)
+    }
+
+    pub fn background(&self, index: &str) -> Option<&Background> {
+        self.backgrounds.iter().find(|b| b.index == index)
+    }
+
+    /// The features a class grants at a level (the class's own level row,
+    /// subclass rows excluded — those come via `levels_for` once chosen).
+    /// The creation wizard and level-up flow both drive grants from this
+    /// (plan Task 5.1/5.2).
+    #[must_use]
+    pub fn level_features(&self, class_index: &str, level: i32) -> Vec<&DatabaseFeature> {
+        self.levels
+            .iter()
+            .filter(|l| l.class.index == class_index && l.subclass.is_none() && l.level == level)
+            .flat_map(|l| l.features.iter())
+            .filter_map(|f| self.feature(&f.index))
+            .collect()
+    }
+
     /// The level rows for a class (optionally narrowed to a subclass),
     /// sorted by level.
     #[must_use]
@@ -216,6 +246,24 @@ mod tests {
         assert!(c.classes.iter().any(|k| k.index == "sorcerer"));
         assert!(c.item("club").is_some());
         assert!(c.spell("fireball").is_some());
+    }
+
+    #[test]
+    fn level_features_grant_the_class_rows_set() {
+        let c = corpus();
+        let names: Vec<String> = c
+            .level_features("wizard", 1)
+            .iter()
+            .map(|f| f.index.clone())
+            .collect();
+        assert!(names.contains(&"spellcasting-wizard".to_string()));
+        assert!(names.contains(&"arcane-recovery".to_string()));
+        // Subclass rows must not leak into the class grant set.
+        assert!(!names.iter().any(|n| n.contains("school")));
+        assert!(c.level_features("wizard", 20).len() >= c.level_features("wizard", 2).len());
+        assert!(c.class("wizard").is_some());
+        assert!(c.background("acolyte").is_some());
+        assert!(c.subrace("high-elf").is_some());
     }
 
     #[test]

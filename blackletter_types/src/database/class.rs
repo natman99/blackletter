@@ -1,6 +1,8 @@
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+use super::background::EquipmentEntry;
+use super::options::ChoiceOption;
 use super::reference::Reference;
 
 /// Raw `5e-SRD-Classes.json` entry — lean: only the fields Blackletter
@@ -16,6 +18,16 @@ pub struct DatabaseClass {
     pub saving_throws: Vec<Reference>,
     pub proficiencies: Vec<Reference>,
     pub subclasses: Vec<Reference>,
+    /// "Choose N from ..." skill/weapon sets the creation wizard prompts
+    /// (plan Task 5.1); the old lean shape dropped these.
+    #[serde(default)]
+    pub proficiency_choices: Vec<ChoiceOption>,
+    /// Fixed starting package (wizard: a spellbook).
+    #[serde(default)]
+    pub starting_equipment: Vec<EquipmentEntry>,
+    /// "choose X from Y" equipment alternatives.
+    #[serde(default)]
+    pub starting_equipment_options: Vec<ChoiceOption>,
     #[serde(default)]
     pub url: String,
 }
