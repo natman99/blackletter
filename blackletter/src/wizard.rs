@@ -218,31 +218,32 @@ impl WizardView {
     }
 
     fn advance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus_self(window, cx);
         self.picker = None;
         if self.idx + 1 < self.steps.len() {
             self.idx += 1;
             self.sel = 0;
             self.enter_step(window, cx);
         }
-        self.reclaim_focus(window, cx);
     }
 
     fn back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus_self(window, cx);
         self.picker = None;
         if self.idx > 0 {
             self.idx -= 1;
             self.sel = 0;
             self.enter_step(window, cx);
         }
-        self.reclaim_focus(window, cx);
     }
 
-    /// gpui drops focus when the focused entity (a closed picker) is
-    /// released; keyboard steps need the wizard's own handle back.
-    fn reclaim_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.picker.is_none() {
-            window.focus(&self.focus_handle, cx);
-        }
+    /// Focus the wizard *before* the closing picker entity is released:
+    /// gpui clears window focus when the focused entity is dropped, and
+    /// that drop lands after the update frame — reclaiming afterwards
+    /// loses to it (live-check finding: every keyboard step went dead
+    /// after the first picker closed).
+    fn focus_self(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        window.focus(&self.focus_handle, cx);
     }
 
     /// Side effects on entering a step: picker steps open their picker.
@@ -301,11 +302,11 @@ impl WizardView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.focus_self(window, cx);
         self.picker = None;
         match outcome {
             PickerOutcome::Cancelled => {
                 self.say("picker closed — enter reopens it", cx);
-                self.reclaim_focus(window, cx);
             }
             PickerOutcome::Chosen(index) => match kind {
                 PickKind::Race => {
