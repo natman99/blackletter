@@ -1333,13 +1333,9 @@ impl SheetView {
             .gap_2()
             .p_2()
             .child(div().text_lg().child(c.name.clone()))
-            .when_some(self.field.as_ref(), |d, _| {
-                d.child(
-                    div()
-                        .w(gpui::px(320.))
-                        .child(FieldElement::new(cx.entity())),
-                )
-            })
+            // No FieldElement here: the root center column renders the one
+            // shared field for every section (a second copy double-painted
+            // it in Basic).
             .child(row(
                 "Race",
                 c.race.as_ref().map_or("—".into(), |r| r.name.clone()),
