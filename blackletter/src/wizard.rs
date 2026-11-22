@@ -56,6 +56,13 @@ pub fn wizard_keys() -> Vec<KeyBinding> {
         KeyBinding::new("shift-enter", WizardBack, ctx),
         KeyBinding::new("up", WizardUp, ctx),
         KeyBinding::new("down", WizardDown, ctx),
+        // hjkl mirrors the arrows everywhere in the wizard (the rest of
+        // the app is hjkl-first; the picker deliberately keeps plain
+        // letters for its filter).
+        KeyBinding::new("k", WizardUp, ctx),
+        KeyBinding::new("j", WizardDown, ctx),
+        KeyBinding::new("h", WizardCycleDown, ctx),
+        KeyBinding::new("l", WizardCycleUp, ctx),
         KeyBinding::new("space", WizardToggle, ctx),
         KeyBinding::new("left", WizardCycleDown, ctx),
         KeyBinding::new("right", WizardCycleUp, ctx),
@@ -257,7 +264,10 @@ impl WizardView {
             Step::Choice(i) => {
                 let opts = self.pending_options();
                 match opts.get(i) {
-                    Some(o) => self.say(format!("{} — space selects, enter confirms", o.desc), cx),
+                    Some(o) => self.say(
+                        format!("{} — j/k move · space toggles · enter confirms", o.desc),
+                        cx,
+                    ),
                     None => self.say("choose", cx),
                 }
             }
@@ -356,6 +366,26 @@ impl WizardView {
         }
         pool.sort_unstable();
         pool
+    }
+
+    /// Up/down (and k/j): walk the selected row of the current step.
+    fn move_sel(&mut self, dir: isize, cx: &mut Context<Self>) {
+        let last = match self.step() {
+            Step::Scores => 5,
+            Step::Choice(i) => {
+                let opts = self.pending_options();
+                match opts.get(i) {
+                    Some(o) => o.candidates().len().saturating_sub(1),
+                    None => return,
+                }
+            }
+            _ => return,
+        };
+        let next = (self.sel as isize + dir).clamp(0, last as isize) as usize;
+        if next != self.sel {
+            self.sel = next;
+            cx.notify();
+        }
     }
 
     fn cycle_score(&mut self, dir: isize, cx: &mut Context<Self>) {
@@ -885,7 +915,7 @@ impl Render for WizardView {
                             .text_sm()
                             .text_color(gpui::rgb(0x8a_90_b0))
                             .child(format!(
-                                "choose {} — space toggles, enter confirms",
+                                "choose {} — j/k move · space toggles · enter confirms",
                                 opt.choose
                             )),
                     )
@@ -951,8 +981,20 @@ impl Render for WizardView {
                             .unwrap_or(0);
                         if got == need {
                             this.advance(window, cx);
+                        } else if got > need {
+                            this.say(
+                                format!(
+                                    "too many: {got} selected, only {need} needed — space unselects"
+                                ),
+                                cx,
+                            );
                         } else {
-                            this.say(format!("select {need}, currently {got}"), cx);
+                            this.say(
+                                format!(
+                                    "not enough yet: {got} of {need} selected — j/k move, space toggles a row, then enter"
+                                ),
+                                cx,
+                            );
                         }
                     }
                     Step::Confirm => this.finish(window, cx),
@@ -971,16 +1013,10 @@ impl Render for WizardView {
             )
             .on_action(cx.listener(|this, _: &WizardBack, window, cx| this.back(window, cx)))
             .on_action(cx.listener(|this, _: &WizardUp, _window, cx| {
-                if this.step() == Step::Scores {
-                    this.sel = this.sel.saturating_sub(1);
-                    cx.notify();
-                }
+                this.move_sel(-1, cx);
             }))
             .on_action(cx.listener(|this, _: &WizardDown, _window, cx| {
-                if this.step() == Step::Scores {
-                    this.sel = (this.sel + 1).min(5);
-                    cx.notify();
-                }
+                this.move_sel(1, cx);
             }))
             .on_action(cx.listener(|this, _: &WizardToggle, _window, cx| {
                 if matches!(this.step(), Step::Choice(_)) {
@@ -1250,6 +1286,40 @@ mod tests {
         cx.run_until_parked();
         let s1 = wiz.read_with(cx, |w, _| w.draft.scores[1]);
         assert!(s1.is_some(), "down+right assigned DEX ({s1:?})");
+
+        // Assign the remaining scores (hjkl works the same as arrows)
+        // and advance into the first starting-choices step.
+        cx.simulate_keystrokes(
+            window.into(),
+            // STR was cleared by the backspace above: re-assign DEX's
+            // neighbors, walk back up, and fill STR last.
+            "l h down l down l down l down l up up up up up l enter",
+        );
+        cx.run_until_parked();
+        let step = wiz.read_with(cx, |w, _| w.step());
+        assert_eq!(step, Step::Choice(0), "entered the first choice step");
+
+        // Enter with nothing selected must NOT advance (the confusing
+        // live case: no feedback about why enter did nothing).
+        cx.simulate_keystrokes(window.into(), "enter");
+        cx.run_until_parked();
+        assert_eq!(
+            wiz.read_with(cx, |w, _| w.step()),
+            Step::Choice(0),
+            "insufficient selection holds the step"
+        );
+        // j moves the candidate cursor, space toggles, enter advances.
+        cx.simulate_keystrokes(window.into(), "j space");
+        cx.run_until_parked();
+        assert_eq!(wiz.read_with(cx, |w, _| w.sel), 1, "j moved the selection");
+        cx.simulate_keystrokes(window.into(), "enter");
+        cx.run_until_parked();
+        assert_eq!(wiz.read_with(cx, |w, _| w.step()), Step::Choice(1));
+        assert_eq!(
+            wiz.read_with(cx, |w, _| w.draft.choices[0].clone()),
+            vec![1],
+            "space toggled candidate 1"
+        );
     }
 
     #[test]
