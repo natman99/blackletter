@@ -49,10 +49,29 @@ pub struct Trait {
     pub url: String,
 }
 
+/// Reference to a subrace, as embedded in the parent race row.
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Subrace {
     pub index: String,
     pub name: String,
+    pub url: String,
+}
+
+/// Full `5e-SRD-Subraces.json` row. The reference-only `Subrace` above is
+/// what the parent race embeds; the corpus table needs the bonuses and
+/// racial traits the creation wizard grants (plan Task 5.1).
+#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DatabaseSubrace {
+    pub index: String,
+    pub name: String,
+    pub race: Subrace,
+    #[serde(default)]
+    pub desc: String,
+    #[serde(default)]
+    pub ability_bonuses: Vec<AbilityBonuse>,
+    #[serde(default)]
+    pub racial_traits: Vec<Trait>,
+    #[serde(default)]
     pub url: String,
 }
 

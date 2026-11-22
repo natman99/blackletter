@@ -157,6 +157,33 @@ impl Default for Class {
 }
 
 impl Class {
+    /// Import a corpus class as a fresh level-1 sheet class (plan Task
+    /// 5.1). Infallible: `ClassType` accepts any name (unknown classes
+    /// land in `Other`), and the hit die falls back to the type's own.
+    #[cfg(feature = "serde")]
+    #[must_use]
+    pub fn try_from_database(db: &crate::database::class::DatabaseClass) -> Self {
+        use crate::sheet::roll::Die;
+        let class = ClassType::from(db.name.as_str());
+        let hit_dice = match db.hit_die {
+            4 => Die::D4,
+            6 => Die::D6,
+            8 => Die::D8,
+            10 => Die::D10,
+            12 => Die::D12,
+            _ => class.get_hit_dice(),
+        };
+        Self {
+            class,
+            subclass: String::new(),
+            level: Level(1),
+            hit_dice,
+            health_bonus_per_level: 0,
+            healing_die_remaining: 1,
+            max_healing_die: 1,
+        }
+    }
+
     pub fn heal(&mut self, roll: bool, health: &mut HitPoints, ability_scores: &AbilityScores) {
         if self.healing_die_remaining == 0 {
             return;
@@ -376,6 +403,31 @@ impl Display for Level {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "serde")]
+    #[test]
+    fn every_srd_class_imports_as_level_one() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../srd/2014/en/5e-SRD-Classes.json"
+        );
+        let text = std::fs::read_to_string(path).expect("vendored SRD classes");
+        let all: Vec<crate::database::class::DatabaseClass> = serde_json::from_str(&text).unwrap();
+        assert_eq!(all.len(), 12, "2014 SRD class count");
+        for db in &all {
+            let c = Class::try_from_database(db);
+            assert_eq!(c.level, Level(1));
+            assert_eq!(c.max_healing_die, 1);
+            assert!(
+                !matches!(c.class, ClassType::Other(_)),
+                "{} should map to a known ClassType",
+                db.name
+            );
+            assert_eq!(c.hit_dice, c.class.get_hit_dice(), "{} hit die", db.name);
+        }
+        let wizard = all.iter().find(|c| c.index == "wizard").unwrap();
+        assert_eq!(Class::try_from_database(wizard).class, ClassType::Wizard);
+    }
+
     use std::str::FromStr;
 
     use crate::{

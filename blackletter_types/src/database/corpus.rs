@@ -26,7 +26,7 @@ pub struct Corpus {
     pub levels: Vec<DatabaseLevel>,
     pub features: Vec<DatabaseFeature>,
     pub races: Vec<Race>,
-    pub subraces: Vec<super::race::Subrace>,
+    pub subraces: Vec<super::race::DatabaseSubrace>,
     pub classes: Vec<DatabaseClass>,
     pub subclasses: Vec<DatabaseSubclass>,
     pub backgrounds: Vec<Background>,
@@ -164,7 +164,7 @@ impl Corpus {
         self.races.iter().find(|r| r.index == index)
     }
 
-    pub fn subrace(&self, index: &str) -> Option<&super::race::Subrace> {
+    pub fn subrace(&self, index: &str) -> Option<&super::race::DatabaseSubrace> {
         self.subraces.iter().find(|r| r.index == index)
     }
 

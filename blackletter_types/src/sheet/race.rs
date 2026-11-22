@@ -113,11 +113,88 @@ impl Race {
             source: Some(Source::Single("SRD (2014)".into())),
         }
     }
+
+    /// Fold a corpus subrace into an imported race (plan Task 5.1): the
+    /// subrace's bonuses stack on the race's, its racial traits extend the
+    /// prose, and the sheet name becomes the subrace name ("High Elf").
+    /// Speed stays the parent's — SRD subraces never override it.
+    #[cfg(feature = "serde")]
+    pub fn apply_subrace(&mut self, sub: &crate::database::race::DatabaseSubrace) {
+        for b in &sub.ability_bonuses {
+            if let Some(score) = Score::ALL
+                .iter()
+                .zip(Score::ALL_STR)
+                .find(|(_, s)| *s == b.ability_score.index)
+                .map(|(score, _)| *score)
+            {
+                self.ability_bonuses.push(AbilityScoreBonus {
+                    score,
+                    bonus: b.bonus as i32,
+                });
+            }
+        }
+        let traits: Vec<&str> = sub.racial_traits.iter().map(|t| t.name.as_str()).collect();
+        if !traits.is_empty() {
+            if !self.desc.is_empty() {
+                self.desc.push(' ');
+            }
+            self.desc
+                .push_str(&format!("Subrace traits: {}.", traits.join("; ")));
+        }
+        if !sub.desc.is_empty() {
+            if !self.desc.is_empty() {
+                self.desc.push(' ');
+            }
+            self.desc.push_str(&sub.desc);
+        }
+        self.name = sub.name.clone();
+        self.source = Some(Source::Single(format!("SRD (2014)/{}", sub.index)));
+    }
 }
 
 #[cfg(all(test, feature = "serde"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subrace_stacks_bonuses_and_extends_prose() {
+        let raw = crate::database::race::Race {
+            index: "elf".into(),
+            name: "Elf".into(),
+            speed: 30,
+            ability_bonuses: vec![crate::database::race::AbilityBonuse {
+                ability_score: crate::database::race::AbilityScore {
+                    index: "dex".into(),
+                    ..Default::default()
+                },
+                bonus: 2,
+            }],
+            ..Default::default()
+        };
+        let mut race = Race::try_from_database(raw);
+        let sub = crate::database::race::DatabaseSubrace {
+            index: "high-elf".into(),
+            name: "High Elf".into(),
+            ability_bonuses: vec![crate::database::race::AbilityBonuse {
+                ability_score: crate::database::race::AbilityScore {
+                    index: "int".into(),
+                    ..Default::default()
+                },
+                bonus: 2,
+            }],
+            racial_traits: vec![crate::database::race::Trait {
+                index: "trance".into(),
+                name: "Trance".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        race.apply_subrace(&sub);
+        assert_eq!(race.name, "High Elf");
+        assert_eq!(race.ability_bonuses.len(), 2);
+        assert!(race.desc.contains("Trance"));
+        assert_eq!(race.speed, Some(30));
+    }
 
     #[test]
     fn srd_race_imports_typed_fields() {
