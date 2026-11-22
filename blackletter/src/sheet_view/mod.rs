@@ -57,6 +57,7 @@ actions!(
         TrayCheck,
         TrayDamage,
         OpenPicker,
+        NewCustom,
     ]
 );
 
@@ -91,6 +92,7 @@ pub fn keybindings() -> Vec<KeyBinding> {
         "c" => TrayCheck,
         "x" => TrayDamage,
         "/" => OpenPicker,
+        "n" => NewCustom,
         "ctrl-z" => Undo,
         "ctrl-shift-z" => Redo,
         "ctrl-s" => Save,
@@ -217,6 +219,8 @@ pub struct SheetView {
     field: Option<(FieldTarget, Field)>,
     /// The open SRD picker overlay, if any.
     picker: Option<Entity<Picker>>,
+    /// The open custom-entry form overlay, if any (plan Task 4.3).
+    form: Option<Entity<crate::form::Form>>,
     /// Dice-tray result log, newest first (max 5).
     roll_log: Vec<String>,
     blank: Field,
@@ -244,6 +248,7 @@ impl SheetView {
             damage_type: DamageType::Bludgeoning,
             field: None,
             picker: None,
+            form: None,
             roll_log: Vec::new(),
             blank: Field::new(""),
         }
@@ -999,6 +1004,197 @@ impl SheetView {
             cx,
         );
         cx.notify();
+    }
+
+    /// Open the custom-entry creation form for the current section's kind
+    /// (plan Task 4.3): the menu for adding homebrew content to the library.
+    fn on_new_custom(&mut self, _: &NewCustom, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(kind) = Self::kind_for_section(self.section) else {
+            self.report("no custom-entry menu in this section", cx);
+            return;
+        };
+        if kind == PickKind::Race {
+            // Races carry traits, bonuses, and languages — a flat form is
+            // the wrong shape; creation stays deferred (plan note).
+            self.report("custom races not supported yet", cx);
+            return;
+        }
+        if self.picker.is_some() || self.form.is_some() {
+            return;
+        }
+        let specs = form_specs(kind);
+        let title = format!("New custom {} (saved to the library)", kind.label());
+        let sheet = cx.entity().downgrade();
+        let form = cx.new(|cx| {
+            crate::form::Form::new(
+                title,
+                &specs,
+                move |outcome, window, cx| {
+                    sheet
+                        .update(cx, |v, cx| v.on_form(kind, outcome, window, cx))
+                        .ok();
+                },
+                cx,
+            )
+        });
+        self.form = Some(form.clone());
+        window.focus(&form.read(cx).focus_handle(cx), cx);
+        self.report("fill the rows, then ctrl-s to save", cx);
+        cx.notify();
+    }
+
+    /// The form's answer: dismiss it, turn the pairs into a typed entry,
+    /// insert it into the library, and cache the library to disk.
+    fn on_form(
+        &mut self,
+        kind: PickKind,
+        outcome: crate::form::FormOutcome,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.form = None;
+        window.focus(&self.focus_handle, cx);
+        let crate::form::FormOutcome::Saved(pairs) = outcome else {
+            self.report("form closed", cx);
+            cx.notify();
+            return;
+        };
+        use std::str::FromStr;
+        let get = |label: &str| {
+            pairs
+                .iter()
+                .find(|(l, _)| l == label)
+                .map(|(_, v)| v.trim().to_owned())
+                .unwrap_or_default()
+        };
+        let name = get("name");
+        if name.is_empty() {
+            self.report("a name is required — nothing saved", cx);
+            cx.notify();
+            return;
+        }
+        let entry = match kind {
+            PickKind::Spell => {
+                use blackletter_types::sheet::spells::Spell;
+                Spell {
+                    name: name.clone(),
+                    desc: get("description"),
+                    level: get("level").parse().unwrap_or(1),
+                    school: blackletter_types::sheet::spells::School::from_str(&get("school"))
+                        .unwrap_or_default(),
+                    cast_time: get("cast time"),
+                    range: get("range"),
+                    duration: get("duration"),
+                    ..Default::default()
+                }
+            }
+            PickKind::Item => {
+                let mut item = Item::new(name.clone());
+                item.description = get("description");
+                item.quantity = get("quantity").parse().unwrap_or(1).max(1);
+                // Item branch returns the Item; Spell arm returns a Spell —
+                // the match below dispatches per kind, so arms stay separate.
+                let dup = self
+                    .library
+                    .update(cx, |lib, _| lib.items.insert(name.clone(), item).is_some());
+                self.finish_library_add(kind, name, dup, cx);
+                cx.notify();
+                return;
+            }
+            PickKind::Feat => {
+                let feat = blackletter_types::sheet::feat::Feat {
+                    name: name.clone(),
+                    desc: get("description"),
+                    feature: None,
+                    source: None,
+                };
+                let dup = self
+                    .library
+                    .update(cx, |lib, _| lib.feats.insert(name.clone(), feat).is_some());
+                self.finish_library_add(kind, name, dup, cx);
+                cx.notify();
+                return;
+            }
+            PickKind::Feature => {
+                let desc = get("description");
+                let feat = blackletter_types::feature::Feature {
+                    name: name.clone(),
+                    source: None,
+                    effects: if desc.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![blackletter_types::sheet::feature::Effect::Custom(desc)]
+                    },
+                };
+                let dup = self.library.update(cx, |lib, _| {
+                    lib.features.insert(name.clone(), feat).is_some()
+                });
+                self.finish_library_add(kind, name, dup, cx);
+                cx.notify();
+                return;
+            }
+            PickKind::Trait => {
+                let tr = blackletter_types::sheet::traits::Trait {
+                    name: name.clone(),
+                    desc: get("description"),
+                    feature: None,
+                    source: None,
+                };
+                let dup = self
+                    .library
+                    .update(cx, |lib, _| lib.traits.insert(name.clone(), tr).is_some());
+                self.finish_library_add(kind, name, dup, cx);
+                cx.notify();
+                return;
+            }
+            PickKind::Race => unreachable!("on_new_custom rejects Race"),
+        };
+        let dup = self.library.update(cx, |lib, _| {
+            lib.spells.insert(name.clone(), entry).is_some()
+        });
+        self.finish_library_add(kind, name, dup, cx);
+        cx.notify();
+    }
+
+    /// Shared tail of a library add: duplicate report or save-to-disk
+    /// report (Task 4.3: added content is cached for future sessions).
+    fn finish_library_add(
+        &mut self,
+        kind: PickKind,
+        name: String,
+        dup: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if dup {
+            self.report(
+                format!("{name} is already in the library — nothing saved"),
+                cx,
+            );
+            return;
+        }
+        let saved = self
+            .root
+            .update(cx, |r, cx| r.save_library(cx))
+            .unwrap_or(false);
+        let noun = match kind {
+            PickKind::Spell => "spell",
+            PickKind::Item => "item",
+            PickKind::Feat => "feat",
+            PickKind::Feature => "feature",
+            PickKind::Trait => "trait",
+            PickKind::Race => "race",
+        };
+        if saved {
+            self.report(
+                format!("added custom {noun} {name} to the library (saved)"),
+                cx,
+            );
+        } else {
+            self.report(
+                format!("added custom {noun} {name} (could not save library file)"),
+                cx,
+            );
+        }
     }
 
     /// The picker's answer: dismiss it, refocus the sheet, apply the choice.
@@ -2421,6 +2617,7 @@ impl Render for SheetView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let field_active = self.field.is_some();
         let picker_open = self.picker.is_some();
+        let form_open = self.form.is_some();
         div()
             .track_focus(&self.focus_handle)
             // While the picker is open its context replaces SHEET_CTX at the
@@ -2428,6 +2625,8 @@ impl Render for SheetView {
             // would otherwise steal keystrokes from the picker's field.
             .key_context(if picker_open {
                 crate::picker::PICKER_CTX
+            } else if form_open {
+                crate::form::FORM_CTX
             } else if field_active {
                 crate::dungeon_view::FIELD_CTX
             } else {
@@ -2460,6 +2659,7 @@ impl Render for SheetView {
             .on_action(cx.listener(Self::on_tray_check))
             .on_action(cx.listener(Self::on_tray_damage))
             .on_action(cx.listener(Self::on_open_picker))
+            .on_action(cx.listener(Self::on_new_custom))
             .child(self.nav(cx))
             .child(
                 div()
@@ -2534,12 +2734,51 @@ impl Render for SheetView {
                         .child(p),
                 )
             })
+            // The custom-entry form rides the same scrim treatment.
+            .when_some(self.form.clone(), |d, f| {
+                d.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .bg(gpui::hsla(0., 0., 0., 0.45))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .pt(gpui::px(56.))
+                        .child(f),
+                )
+            })
     }
 }
 
 /// `$after` hook for `field_key_actions!`: cut/paste change the text, but
 /// sheet fields only commit on submit, so there is nothing to recompute.
 pub fn after_sheet_field_change(_v: &mut SheetView, _cx: &mut Context<SheetView>) {}
+
+/// The rows each custom-entry kind asks for, with defaults. Kept flat and
+/// text-first: parsing is forgiving (bad numbers fall back, unknown schools
+/// default), because the form is a quick capture tool, not a rules validator.
+fn form_specs(kind: PickKind) -> Vec<(&'static str, String)> {
+    let spec = |pairs: &[(&'static str, &str)]| {
+        pairs.iter().map(|(l, v)| (*l, (*v).to_string())).collect()
+    };
+    match kind {
+        PickKind::Spell => spec(&[
+            ("name", ""),
+            ("level", "1"),
+            ("school", "Evocation"),
+            ("cast time", "1 action"),
+            ("range", "30 ft."),
+            ("duration", "Instantaneous"),
+            ("description", ""),
+        ]),
+        PickKind::Item => spec(&[("name", ""), ("quantity", "1"), ("description", "")]),
+        PickKind::Feat => spec(&[("name", ""), ("description", "")]),
+        PickKind::Feature => spec(&[("name", ""), ("description", "")]),
+        PickKind::Trait => spec(&[("name", ""), ("description", "")]),
+        PickKind::Race => Vec::new(),
+    }
+}
 
 /// Constructor used by the root view.
 pub fn build(
@@ -2580,10 +2819,18 @@ mod tests {
             cx.bind_keys(keybindings());
             cx.bind_keys(crate::field::field_keys(crate::dungeon_view::FIELD_CTX));
             cx.bind_keys(crate::picker::picker_keys());
+            cx.bind_keys(crate::form::form_keys());
             Autosave::init(cx);
         });
         let window = cx.add_window(|_, cx| {
-            RootView::new(cx, Session::default(), None, corpus, Library::default())
+            RootView::new(
+                cx,
+                Session::default(),
+                None,
+                corpus,
+                Library::default(),
+                None,
+            )
         });
         window
             .update(cx, |view, window, cx| window.focus(view.focus_handle(), cx))
@@ -2820,8 +3067,10 @@ mod tests {
         cx.run_until_parked();
         let log = cx.read(|cx| view.read(cx).roll_log.clone());
         assert_eq!(log.len(), 1, "{log:?}");
+        // NB: a natural 20 appends " CRIT!" after the (adv) marker, so
+        // match the marker with contains, not ends_with (flaky otherwise).
         assert!(
-            log[0].starts_with("attack ") && log[0].ends_with("(adv)"),
+            log[0].starts_with("attack ") && log[0].contains("(adv)"),
             "{log:?}"
         );
         // Save.
@@ -2943,7 +3192,12 @@ mod tests {
         cx.simulate_keystrokes(window.into(), "space");
         cx.run_until_parked();
         let ds = cx.read(|cx| view.read(cx).doc().character.death_saves);
-        assert!(ds.successes + ds.failures > 0, "a save was recorded");
+        // A nat 20 stabilizes instantly and clears the pips, so "a save was
+        // recorded" must accept that branch too (flaky otherwise).
+        assert!(
+            ds.successes + ds.failures > 0 || ds.stable,
+            "a save was recorded or a nat 20 stabilized"
+        );
         cx.simulate_keystrokes(window.into(), "S"); // shift-S long rest
         cx.run_until_parked();
         let ds = cx.read(|cx| view.read(cx).doc().character.death_saves);
@@ -3101,6 +3355,105 @@ mod tests {
             cx.read(|cx| view.read(cx).picker.is_none()),
             "picker dismisses after picking"
         );
+    }
+
+    #[gpui::test]
+    fn the_custom_form_adds_a_spell_to_the_library(cx: &mut TestAppContext) {
+        // Task 4.3 slice C: `n` opens the add-menu, ctrl-s lands the entry
+        // in the library entity (and, with a path configured, on disk).
+        let (window, root) = open_sheet_with(cx, Some(test_corpus()));
+        let view = sheet(cx, &root);
+        cx.simulate_keystrokes(window.into(), "] ] ] ]"); // Spells
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "n");
+        cx.run_until_parked();
+        assert!(
+            cx.read(|cx| view.read(cx).form.is_some()),
+            "n opens the custom-entry form in the Spells section"
+        );
+        // enter edits the name row; type; enter commits; ctrl-s saves.
+        cx.simulate_keystrokes(window.into(), "enter");
+        cx.run_until_parked();
+        cx.simulate_input(window.into(), "Moonfire Bolt");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "enter ctrl-s");
+        cx.run_until_parked();
+        assert!(
+            cx.read(|cx| view.read(cx).form.is_none()),
+            "form dismisses after saving"
+        );
+        let spells = cx.read(|cx| {
+            root.read(cx)
+                .library()
+                .read(cx)
+                .spells
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(spells, vec!["Moonfire Bolt"], "library holds the new spell");
+        // And it shows up in the picker straight away.
+        cx.simulate_keystrokes(window.into(), "/");
+        cx.run_until_parked();
+        cx.simulate_input(window.into(), "moonfire");
+        cx.run_until_parked();
+        let rows = cx.read(|cx| {
+            view.read(cx)
+                .picker
+                .as_ref()
+                .map(|p| p.read(cx).row_indexes())
+                .unwrap_or_default()
+        });
+        assert_eq!(rows, vec!["custom:Moonfire Bolt"]);
+    }
+
+    #[gpui::test]
+    fn the_library_file_caches_added_content(cx: &mut TestAppContext) {
+        // The user's rule: anything added is cached and shows up in future
+        // sessions. Drive the form with a real library path in a temp dir.
+        let dir = std::env::temp_dir().join(format!("bl_form_lib_{}", std::process::id()));
+        let path = dir.join("nested/library.json");
+        cx.update(|cx| {
+            cx.bind_keys(crate::root::keybindings());
+            cx.bind_keys(keybindings());
+            cx.bind_keys(crate::field::field_keys(crate::dungeon_view::FIELD_CTX));
+            cx.bind_keys(crate::picker::picker_keys());
+            cx.bind_keys(crate::form::form_keys());
+            crate::autosave::Autosave::init(cx);
+        });
+        let window = cx.add_window(|_, cx| {
+            RootView::new(
+                cx,
+                Session::default(),
+                None,
+                Some(test_corpus()),
+                Library::default(),
+                Some(path.clone()),
+            )
+        });
+        window
+            .update(cx, |view, window, cx| window.focus(view.focus_handle(), cx))
+            .unwrap();
+        let root = window.root(cx).unwrap();
+        let _ = window.update(cx, |view, window, cx| view.ensure_sheet(window, cx));
+        let view = sheet(cx, &root);
+        cx.simulate_keystrokes(window.into(), "] ] ] ]"); // Spells
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "n");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "enter");
+        cx.run_until_parked();
+        cx.simulate_input(window.into(), "Ember Lance");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "enter ctrl-s");
+        cx.run_until_parked();
+        let back = Library::load(&path).expect("library file was written");
+        assert!(
+            back.spells.contains_key("Ember Lance"),
+            "the add is cached on disk"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = view;
     }
 
     #[gpui::test]

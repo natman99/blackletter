@@ -59,6 +59,8 @@ pub struct RootView {
     /// The custom-content library (plan Task 4.3), loaded at startup and
     /// saved on every change; every sheet view shares this one entity.
     library: Entity<Library>,
+    /// Where the library persists; `None` (tests) keeps it in memory only.
+    library_path: Option<PathBuf>,
     dungeon: Option<Entity<DungeonView>>,
     sheet: Option<Entity<SheetView>>,
 }
@@ -70,6 +72,7 @@ impl RootView {
         session_path: Option<PathBuf>,
         corpus: Option<Arc<Corpus>>,
         library: Library,
+        library_path: Option<PathBuf>,
     ) -> Self {
         let library = cx.new(|_| library);
         let mode = session.mode.into();
@@ -86,6 +89,7 @@ impl RootView {
             session_path,
             corpus,
             library,
+            library_path,
             dungeon: None,
             sheet: None,
         }
@@ -94,6 +98,16 @@ impl RootView {
     /// The shared custom-content library entity (plan Task 4.3).
     pub fn library(&self) -> &Entity<Library> {
         &self.library
+    }
+
+    /// Cache the library to disk (Task 4.3: everything added shows up in
+    /// future sessions). False when no path is configured or the write
+    /// failed; the caller reports.
+    pub fn save_library(&self, cx: &gpui::App) -> bool {
+        let Some(path) = &self.library_path else {
+            return false;
+        };
+        self.library.read(cx).save(path).is_ok()
     }
 
     #[cfg(test)]
@@ -521,7 +535,7 @@ mod tests {
             crate::autosave::Autosave::init(cx);
         });
         let window = cx.add_window(|_, cx| {
-            RootView::new(cx, Session::default(), None, None, Library::default())
+            RootView::new(cx, Session::default(), None, None, Library::default(), None)
         });
         window
             .update(cx, |view, window, cx| window.focus(&view.focus_handle, cx))
@@ -562,6 +576,7 @@ mod tests {
                 Some(path.clone()),
                 None,
                 Library::default(),
+                None,
             )
         });
         window

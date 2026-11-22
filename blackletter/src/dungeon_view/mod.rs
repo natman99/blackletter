@@ -1417,6 +1417,7 @@ mod tests {
                 None,
                 None,
                 blackletter_types::library::Library::default(),
+                None,
             )
         });
         window

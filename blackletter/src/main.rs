@@ -5,6 +5,7 @@ mod campaign;
 mod dungeon_view;
 mod field;
 mod files;
+mod form;
 mod picker;
 mod root;
 mod session;
@@ -28,6 +29,7 @@ fn main() {
         cx.bind_keys(sheet_view::keybindings());
         cx.bind_keys(field::field_keys(dungeon_view::FIELD_CTX));
         cx.bind_keys(picker::picker_keys());
+        cx.bind_keys(form::form_keys());
         autosave::Autosave::init(cx);
         // The SRD corpus loads once at startup (vendored `srd/`, see Task
         // 4.1); a missing corpus only disables the pickers, never the app.
@@ -52,7 +54,18 @@ fn main() {
                 }),
                 ..Default::default()
             },
-            |_, cx| cx.new(|cx| RootView::new(cx, session, session_path, corpus, library)),
+            |_, cx| {
+                cx.new(|cx| {
+                    RootView::new(
+                        cx,
+                        session,
+                        session_path,
+                        corpus,
+                        library,
+                        session::library_path(),
+                    )
+                })
+            },
         ) {
             Ok(w) => w,
             Err(e) => {

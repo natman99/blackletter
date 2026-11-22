@@ -45,7 +45,7 @@ pub enum PickKind {
 }
 
 impl PickKind {
-    fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             PickKind::Spell => "spell",
             PickKind::Item => "item",
@@ -119,6 +119,11 @@ impl Picker {
         };
         me.refilter();
         me
+    }
+
+    #[cfg(test)]
+    pub fn row_indexes(&self) -> Vec<String> {
+        self.rows.iter().map(|r| r.index.clone()).collect()
     }
 
     /// Re-run the filter over `all`. Tokens must all appear in the row's
