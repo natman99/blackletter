@@ -9,8 +9,8 @@
 //! the form itself stays content-agnostic.
 
 use gpui::{
-    App, Context, Entity, FocusHandle, Focusable, KeyBinding, Render, SharedString, Window,
-    actions, div, prelude::*,
+    App, Context, FocusHandle, Focusable, KeyBinding, Render, SharedString, Window, actions, div,
+    prelude::*,
 };
 
 use crate::field::{Field, FieldCancel, FieldElement, FieldOwner, FieldSubmit, field_keys};
@@ -82,10 +82,10 @@ impl Form {
 
     /// Write the field back into the row being edited, if any.
     fn commit_edit(&mut self) {
-        if let Some(i) = self.editing.take() {
-            if let Some(row) = self.rows.get_mut(i) {
-                row.value = self.field.text().to_string();
-            }
+        if let Some(i) = self.editing.take()
+            && let Some(row) = self.rows.get_mut(i)
+        {
+            row.value = self.field.text().to_string();
         }
     }
 
@@ -330,19 +330,10 @@ impl Render for Form {
     }
 }
 
-/// Convenience for owners: the entity handle after construction.
-pub fn build_form(
-    title: impl Into<SharedString>,
-    specs: &[(&'static str, String)],
-    on_outcome: impl FnMut(FormOutcome, &mut Window, &mut App) + Send + 'static,
-    cx: &mut App,
-) -> Entity<Form> {
-    cx.new(|cx| Form::new(title, specs, on_outcome, cx))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gpui::Entity;
     use gpui::TestAppContext;
 
     fn form(cx: &mut TestAppContext) -> (gpui::WindowHandle<Form>, Entity<Form>) {

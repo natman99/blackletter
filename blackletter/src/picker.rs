@@ -42,6 +42,11 @@ pub enum PickKind {
     Race,
     Trait,
     Feature,
+    /// Wizard-only kinds (plan Task 5.1): the sheet has no class/
+    /// background picker, the creation flow does.
+    Class,
+    Background,
+    Subrace,
 }
 
 impl PickKind {
@@ -53,6 +58,9 @@ impl PickKind {
             PickKind::Race => "race",
             PickKind::Trait => "trait",
             PickKind::Feature => "feature",
+            PickKind::Class => "class",
+            PickKind::Background => "background",
+            PickKind::Subrace => "subrace",
         }
     }
 }
@@ -309,6 +317,82 @@ fn srd_rows(corpus: &Corpus, kind: PickKind) -> Vec<PickRow> {
             .iter()
             .map(|t| row(t.index.clone(), t.name.clone(), join(&t.desc)))
             .collect(),
+        PickKind::Class => corpus
+            .classes
+            .iter()
+            .map(|c| {
+                let saves: Vec<&str> = c.saving_throws.iter().map(|s| s.name.as_str()).collect();
+                let detail = format!(
+                    "d{} hit die · saves: {} · proficiencies: {}.",
+                    c.hit_die,
+                    if saves.is_empty() {
+                        "none".into()
+                    } else {
+                        saves.join(", ")
+                    },
+                    c.proficiencies
+                        .iter()
+                        .map(|p| p.name.clone())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+                row(
+                    c.index.clone(),
+                    format!("{} — d{}", c.name, c.hit_die),
+                    detail,
+                )
+            })
+            .collect(),
+        PickKind::Background => corpus
+            .backgrounds
+            .iter()
+            .map(|b| {
+                let skills: Vec<&str> = b
+                    .starting_proficiencies
+                    .iter()
+                    .map(|p| p.name.as_str())
+                    .collect();
+                let feat = b
+                    .feature
+                    .as_ref()
+                    .map(|f| f.name.clone())
+                    .unwrap_or_default();
+                let detail = format!(
+                    "Proficiencies: {}. {}{}",
+                    skills.join(", "),
+                    feat,
+                    b.starting_gold
+                        .as_ref()
+                        .map(|g| format!(" · starting gold {} gp", g.quantity))
+                        .unwrap_or_default()
+                );
+                row(b.index.clone(), b.name.clone(), detail)
+            })
+            .collect(),
+        PickKind::Subrace => corpus
+            .subraces
+            .iter()
+            .map(|sr| {
+                let ab: Vec<String> = sr
+                    .ability_bonuses
+                    .iter()
+                    .map(|b| format!("+{} {}", b.bonus, b.ability_score.name))
+                    .collect();
+                let traits: Vec<&str> = sr.racial_traits.iter().map(|t| t.name.as_str()).collect();
+                let detail = format!(
+                    "{} ({}) · {}. Traits: {}.",
+                    sr.name,
+                    sr.race.name,
+                    ab.join(", "),
+                    traits.join("; ")
+                );
+                row(
+                    sr.index.clone(),
+                    format!("{} ({})", sr.name, sr.race.name),
+                    detail,
+                )
+            })
+            .collect(),
         PickKind::Feature => corpus
             .features
             .iter()
@@ -430,6 +514,9 @@ fn custom_rows(lib: &Library, kind: PickKind) -> Vec<PickRow> {
                 row(&f.name, format!("{} [custom]", f.name), detail)
             })
             .collect(),
+        // The library holds no classes/backgrounds/subraces (yet): the
+        // wizard drives those from the corpus alone.
+        PickKind::Class | PickKind::Background | PickKind::Subrace => Vec::new(),
     }
 }
 

@@ -1147,7 +1147,9 @@ impl SheetView {
                 cx.notify();
                 return;
             }
-            PickKind::Race => unreachable!("on_new_custom rejects Race"),
+            PickKind::Race | PickKind::Class | PickKind::Background | PickKind::Subrace => {
+                unreachable!("on_new_custom rejects these kinds")
+            }
         };
         let dup = self.library.update(cx, |lib, _| {
             lib.spells.insert(name.clone(), entry).is_some()
@@ -1183,6 +1185,7 @@ impl SheetView {
             PickKind::Feature => "feature",
             PickKind::Trait => "trait",
             PickKind::Race => "race",
+            PickKind::Class | PickKind::Background | PickKind::Subrace => "entry",
         };
         if saved {
             self.report(
@@ -1306,6 +1309,10 @@ impl SheetView {
                 self.doc.edit(|c| c.add_trait(tr));
                 self.report(format!("added trait {name}"), cx);
             }
+            PickKind::Class | PickKind::Background | PickKind::Subrace => {
+                // Wizard-only kinds; the sheet never opens these pickers.
+                self.report("that picker belongs to the creation wizard", cx);
+            }
             PickKind::Feature => {
                 let Some(db) = corpus.feature(index).cloned() else {
                     self.report("corpus entry vanished", cx);
@@ -1404,6 +1411,7 @@ impl SheetView {
                 self.doc.edit(|c| c.add_trait(tr));
                 self.report(format!("added trait {name}"), cx);
             }
+            PickKind::Class | PickKind::Background | PickKind::Subrace => (),
             PickKind::Feature => {
                 let Some(feat) = lib.features.get(&name).cloned() else {
                     self.report("library entry vanished", cx);
@@ -2776,7 +2784,7 @@ fn form_specs(kind: PickKind) -> Vec<(&'static str, String)> {
         PickKind::Feat => spec(&[("name", ""), ("description", "")]),
         PickKind::Feature => spec(&[("name", ""), ("description", "")]),
         PickKind::Trait => spec(&[("name", ""), ("description", "")]),
-        PickKind::Race => Vec::new(),
+        PickKind::Race | PickKind::Class | PickKind::Background | PickKind::Subrace => Vec::new(),
     }
 }
 

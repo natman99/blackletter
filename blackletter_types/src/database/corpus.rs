@@ -10,9 +10,17 @@ use std::{
 use anyhow::{Context, Result};
 
 use super::{
-    background::Background, class::DatabaseClass, condition::Condition, feat::DatabaseFeat,
-    feature::DatabaseFeature, item::Equipment, level::DatabaseLevel, race::Race,
-    reference::Edition, spell::DatabaseSpell, subclass::DatabaseSubclass,
+    background::Background,
+    class::DatabaseClass,
+    condition::Condition,
+    feat::DatabaseFeat,
+    feature::DatabaseFeature,
+    item::{Equipment, EquipmentCategory},
+    level::DatabaseLevel,
+    race::Race,
+    reference::Edition,
+    spell::DatabaseSpell,
+    subclass::DatabaseSubclass,
     traits::Trait as DatabaseTrait,
 };
 
@@ -22,6 +30,7 @@ pub struct Corpus {
     pub edition: Edition,
     pub spells: Vec<DatabaseSpell>,
     pub items: Vec<Equipment>,
+    pub equipment_categories: Vec<EquipmentCategory>,
     pub feats: Vec<DatabaseFeat>,
     pub levels: Vec<DatabaseLevel>,
     pub features: Vec<DatabaseFeature>,
@@ -52,12 +61,27 @@ impl Corpus {
         };
         read(&dir.join("5e-SRD-Spells.json"), &mut c.spells)?;
         read(&dir.join("5e-SRD-Equipment.json"), &mut c.items)?;
+        read(
+            &dir.join("5e-SRD-Equipment-Categories.json"),
+            &mut c.equipment_categories,
+        )?;
         read(&dir.join("5e-SRD-Feats.json"), &mut c.feats)?;
         read(&dir.join("5e-SRD-Levels.json"), &mut c.levels)?;
         read(&dir.join("5e-SRD-Features.json"), &mut c.features)?;
         read(&dir.join("5e-SRD-Races.json"), &mut c.races)?;
         read(&dir.join("5e-SRD-Subraces.json"), &mut c.subraces)?;
         read(&dir.join("5e-SRD-Classes.json"), &mut c.classes)?;
+
+        // Expand equipment_category option sets into concrete members so
+        // wizard prompts (plan Task 5.1) can list real candidates.
+        for class in &mut c.classes {
+            for opt in &mut class.starting_equipment_options {
+                opt.expand_categories(&c.equipment_categories);
+            }
+            for opt in &mut class.proficiency_choices {
+                opt.expand_categories(&c.equipment_categories);
+            }
+        }
         read(&dir.join("5e-SRD-Subclasses.json"), &mut c.subclasses)?;
         read(&dir.join("5e-SRD-Backgrounds.json"), &mut c.backgrounds)?;
         read(&dir.join("5e-SRD-Traits.json"), &mut c.traits)?;
@@ -142,6 +166,10 @@ impl Corpus {
     #[must_use]
     pub fn has_index(&self, index: &str) -> bool {
         self.indexes.by_index.contains_key(index)
+    }
+
+    pub fn equipment_category(&self, index: &str) -> Option<&EquipmentCategory> {
+        self.equipment_categories.iter().find(|e| e.index == index)
     }
 
     pub fn item(&self, index: &str) -> Option<&Equipment> {

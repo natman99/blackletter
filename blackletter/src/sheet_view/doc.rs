@@ -19,6 +19,18 @@ pub struct SheetDoc {
 }
 
 impl SheetDoc {
+    /// Adopt an already-built character (the creation wizard's answer,
+    /// plan Task 5.1): the doc starts dirty so the first save writes it.
+    pub fn with_character(character: blackletter_types::Character) -> Self {
+        Self {
+            character,
+            file: None,
+            dirty: true,
+            undo: Vec::new(),
+            redo: Vec::new(),
+        }
+    }
+
     pub fn new(name: impl Into<String>) -> Self {
         let name = name.into();
         Self {

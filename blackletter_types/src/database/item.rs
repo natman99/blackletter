@@ -3,6 +3,18 @@ use serde::{Deserialize, Serialize};
 
 use super::reference::{Cost, Reference};
 
+/// Raw `5e-SRD-Equipment-Categories.json` entry: a named equipment
+/// bucket (`arcane-foci`, `kits`, ...) whose member list is authoritative
+/// for `option_set_type: "equipment_category"` option sets.
+#[cfg(feature = "serde")]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EquipmentCategory {
+    pub index: String,
+    pub name: String,
+    pub equipment: Vec<Reference>,
+}
+
 /// Raw `5e-SRD-Equipment.json` entry.
 #[cfg(feature = "serde")]
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]

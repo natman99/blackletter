@@ -12,6 +12,9 @@
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "serde")]
+use super::item::EquipmentCategory;
+#[cfg(feature = "serde")]
 use super::reference::Reference;
 
 /// One "choose N of these" prompt as the corpus encodes it.
@@ -35,6 +38,9 @@ pub struct OptionSet {
     #[serde(rename = "option_set_type")]
     pub set_type: String,
     pub options: Vec<OptionItem>,
+    /// For `option_set_type: "equipment_category"`: the category whose
+    /// equipment rows become the members (expanded at corpus load).
+    pub equipment_category: Option<Reference>,
 }
 
 /// One member of an option set. Which fields are present depends on
@@ -52,6 +58,9 @@ pub struct OptionItem {
     pub count: Option<i64>,
     pub options: Vec<OptionItem>,
     pub desc: String,
+    /// For `option_type: "choice"`: a nested option set (e.g. "an arcane
+    /// focus" inside the wizard's starting equipment).
+    pub choice: Option<ChoiceOption>,
 }
 
 /// A concrete pick flattened out of an option set: what the sheet would
@@ -107,8 +116,57 @@ impl OptionItem {
                     inner.flatten(out);
                 }
             }
-            // "choice" (free-form) and any future type: desc-only.
+            "choice" => {
+                // Nested set: flatten its members up (the nested choose
+                // count is subsumed by the parent's).
+                if let Some(c) = &self.choice
+                    && let Some(set) = &c.from
+                {
+                    for inner in &set.options {
+                        inner.flatten(out);
+                    }
+                }
+            }
+            // Any future type: desc-only.
             _ => {}
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl ChoiceOption {
+    /// Replace `equipment_category` sets with concrete reference members
+    /// drawn from the corpus's equipment table, recursively. Called once
+    /// at corpus load so `candidates()` stays a pure function.
+    pub fn expand_categories(&mut self, categories: &[EquipmentCategory]) {
+        if let Some(set) = &mut self.from {
+            expand_set(set, categories);
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+fn expand_set(set: &mut OptionSet, categories: &[EquipmentCategory]) {
+    if set.set_type == "equipment_category"
+        && let Some(cat) = &set.equipment_category
+        && let Some(row) = categories.iter().find(|e| e.index == cat.index)
+    {
+        set.options = row
+            .equipment
+            .iter()
+            .map(|r| OptionItem {
+                item_type: "reference".into(),
+                item: Some(Reference::new(&r.index, &r.name)),
+                ..Default::default()
+            })
+            .collect();
+        set.set_type = "options_array".into();
+    }
+    for item in &mut set.options {
+        if let Some(c) = &mut item.choice
+            && let Some(inner) = &mut c.from
+        {
+            expand_set(inner, categories);
         }
     }
 }
@@ -147,7 +205,20 @@ mod tests {
 
     #[test]
     fn candidates_flatten_reference_types() {
-        let all = classes();
+        let mut all = classes();
+        // Mirror what Corpus::load does: expand equipment_category sets
+        // into concrete members before flattening.
+        let cat_path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../srd/2014/en/5e-SRD-Equipment-Categories.json"
+        );
+        let cats: Vec<super::super::item::EquipmentCategory> =
+            serde_json::from_str(&std::fs::read_to_string(cat_path).unwrap()).unwrap();
+        for class in &mut all {
+            for opt in &mut class.starting_equipment_options {
+                opt.expand_categories(&cats);
+            }
+        }
         let wizard = all.iter().find(|c| c.index == "wizard").unwrap();
         // "(a) a quarterstaff or (b) a dagger"
         let opt = &wizard.starting_equipment_options[0];
@@ -156,6 +227,17 @@ mod tests {
         assert_eq!(cands[0].index, "quarterstaff");
         assert_eq!(cands[0].quantity, 1);
         assert_eq!(cands[1].index, "dagger");
+
+        // "(a) a component pouch or (b) an arcane focus": a
+        // counted_reference plus a nested equipment_category choice —
+        // expanded at load, flattened by candidates().
+        let opt = &wizard.starting_equipment_options[1];
+        let cands = opt.candidates();
+        assert_eq!(cands[0].index, "component-pouch");
+        assert!(
+            cands.iter().any(|c| c.index == "crystal"),
+            "arcane foci expanded: {cands:?}"
+        );
 
         // Skill choices flatten to `skill-*` references.
         let skills = wizard.proficiency_choices[0].candidates();

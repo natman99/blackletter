@@ -10,7 +10,7 @@ use gpui::{
 
 use crate::autosave::Autosave;
 use crate::dungeon_view::{self, DungeonDoc, DungeonView};
-use crate::session::Session;
+use crate::session::{Session, StoredMode};
 use crate::sheet_view::{self, SheetDoc, SheetView};
 use blackletter_types::{database::corpus::Corpus, library::Library};
 use std::path::PathBuf;
@@ -24,7 +24,8 @@ actions!(
         NewCampaign,
         OpenCampaign,
         PrevDungeon,
-        NextDungeon
+        NextDungeon,
+        NewCharacter
     ]
 );
 
@@ -35,6 +36,7 @@ pub fn keybindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-1", ModeSheet, None),
         KeyBinding::new("ctrl-2", ModeDungeon, None),
         KeyBinding::new("ctrl-n", NewCampaign, None),
+        KeyBinding::new("ctrl-shift-n", NewCharacter, None),
         KeyBinding::new("ctrl-o", OpenCampaign, None),
         KeyBinding::new("ctrl-comma", PrevDungeon, None),
         KeyBinding::new("ctrl-period", NextDungeon, None),
@@ -63,6 +65,8 @@ pub struct RootView {
     library_path: Option<PathBuf>,
     dungeon: Option<Entity<DungeonView>>,
     sheet: Option<Entity<SheetView>>,
+    /// The new-character wizard (plan Task 5.1), open as a full view.
+    wizard: Option<Entity<crate::wizard::WizardView>>,
 }
 
 impl RootView {
@@ -92,10 +96,12 @@ impl RootView {
             library_path,
             dungeon: None,
             sheet: None,
+            wizard: None,
         }
     }
 
     /// The shared custom-content library entity (plan Task 4.3).
+    #[cfg(test)] // used by the sheet tests' library-seeding helpers
     pub fn library(&self) -> &Entity<Library> {
         &self.library
     }
@@ -161,6 +167,17 @@ impl RootView {
     /// doc) and register its autosave saver.
     fn build_sheet(&mut self, cx: &mut Context<Self>) -> Entity<SheetView> {
         let (doc, dir) = self.sheet_doc_or_new();
+        self.open_doc(doc, dir, cx)
+    }
+
+    /// Open `doc` as the sheet view (wizard-created characters arrive this
+    /// way, plan Task 5.1), registering its autosave saver.
+    pub fn open_doc(
+        &mut self,
+        doc: SheetDoc,
+        dir: Option<PathBuf>,
+        cx: &mut Context<Self>,
+    ) -> Entity<SheetView> {
         let root = cx.entity().downgrade();
         let view = sheet_view::build(
             doc,
@@ -178,6 +195,78 @@ impl RootView {
         );
         self.sheet = Some(view.clone());
         view
+    }
+
+    /// Open the new-character wizard (ctrl-shift-n).
+    fn on_new_character(&mut self, _: &NewCharacter, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(corpus) = self.corpus.clone() else {
+            self.set_status("the wizard needs the SRD corpus — it was not found", cx);
+            return;
+        };
+        if self.wizard.is_some() {
+            return;
+        }
+        let root = cx.entity().downgrade();
+        let view = cx.new(|cx| {
+            crate::wizard::WizardView::new(
+                corpus,
+                self.library.clone(),
+                move |outcome, window, cx| {
+                    root.update(cx, |r, cx| r.on_wizard_finish(outcome, window, cx))
+                        .ok();
+                },
+                cx,
+            )
+        });
+        self.wizard = Some(view.clone());
+        window.focus(&view.read(cx).focus_handle(cx), cx);
+        self.set_status("new character wizard", cx);
+    }
+
+    /// The wizard's answer: on success, adopt the character as the open
+    /// sheet and save it into the campaign (when one is open).
+    fn on_wizard_finish(
+        &mut self,
+        outcome: crate::wizard::WizardOutcome,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.wizard = None;
+        let crate::wizard::WizardOutcome::Finished(character) = outcome else {
+            self.set_status("wizard cancelled", cx);
+            return;
+        };
+        let name = character.name.clone();
+        let dir = self
+            .session
+            .campaign
+            .as_ref()
+            .map(|root| crate::campaign::Campaign { root: root.clone() }.characters_dir());
+        let mut doc = SheetDoc::with_character(*character);
+        if let Some(dir) = dir.clone() {
+            match doc.save_to_dir(&dir) {
+                Ok(Some(p)) => self.set_status(
+                    format!(
+                        "created {name} (saved {})",
+                        p.file_name().unwrap_or_default().to_string_lossy()
+                    ),
+                    cx,
+                ),
+                Ok(None) => self.set_status(format!("created {name}"), cx),
+                Err(e) => self.set_status(format!("created {name} — save failed: {e}"), cx),
+            }
+        } else {
+            self.set_status(
+                format!("created {name} — open a campaign (ctrl-O) to save it"),
+                cx,
+            );
+        }
+        self.mode = Mode::Sheet;
+        self.session.mode = StoredMode::Sheet;
+        self.save_session();
+        let view = self.open_doc(doc, dir, cx);
+        window.focus(&view.read(cx).focus_handle(cx), cx);
+        cx.notify();
     }
 
     fn sheet_doc_or_new(&self) -> (SheetDoc, Option<PathBuf>) {
@@ -477,6 +566,7 @@ impl Render for RootView {
             .on_action(cx.listener(Self::on_open_campaign))
             .on_action(cx.listener(Self::on_prev_dungeon))
             .on_action(cx.listener(Self::on_next_dungeon))
+            .on_action(cx.listener(Self::on_new_character))
             // Top bar: mode tabs.
             .child(
                 div()
@@ -488,9 +578,15 @@ impl Render for RootView {
             // Center: the active mode's view.
             .child(
                 div().flex_1().flex().bg(gpui::rgb(0x24_24_30)).child(
-                    match (self.mode, self.dungeon.clone(), self.sheet.clone()) {
-                        (Mode::Dungeon, Some(view), _) => view.into_any_element(),
-                        (Mode::Dungeon, None, _) => div()
+                    match (
+                        self.wizard.clone(),
+                        self.mode,
+                        self.dungeon.clone(),
+                        self.sheet.clone(),
+                    ) {
+                        (Some(view), _, _, _) => view.into_any_element(),
+                        (None, Mode::Dungeon, Some(view), _) => view.into_any_element(),
+                        (None, Mode::Dungeon, None, _) => div()
                             .size_full()
                             .flex()
                             .items_center()
@@ -498,8 +594,8 @@ impl Render for RootView {
                             .text_2xl()
                             .child("Dungeon mode — open a campaign (ctrl-O)")
                             .into_any_element(),
-                        (Mode::Sheet, _, Some(view)) => view.into_any_element(),
-                        (Mode::Sheet, _, None) => div()
+                        (None, Mode::Sheet, _, Some(view)) => view.into_any_element(),
+                        (None, Mode::Sheet, _, None) => div()
                             .size_full()
                             .flex()
                             .items_center()
