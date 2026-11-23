@@ -275,6 +275,16 @@ pub enum CastingMechanic {
 }
 
 impl ClassType {
+    /// The SRD index string for this class ("fighter"); `Other` passes
+    /// its name through lowercased with spaces dashed.
+    #[must_use]
+    pub fn index(&self) -> String {
+        match self {
+            Self::Other(s) => s.to_lowercase().replace(' ', "-"),
+            c => format!("{c:?}").to_lowercase(),
+        }
+    }
+
     /// The SRD 2014 casting mechanic for this class, or `None` for classes
     /// with no spellcasting (subclass features like the Eldritch Knight
     /// are handled by granting the mechanic at the feature layer later).

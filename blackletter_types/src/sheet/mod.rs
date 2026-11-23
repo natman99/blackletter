@@ -24,6 +24,7 @@ pub mod feat;
 pub mod feature;
 pub mod grant;
 pub mod language;
+pub mod levelup;
 pub mod lore;
 pub mod meter;
 pub mod race;
