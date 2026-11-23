@@ -89,6 +89,12 @@ pub struct Spell {
     pub source: Option<Source>,
     /// The classes that can have this spell.
     pub classes: Vec<ClassType>,
+    /// Per-spell override of the spellcasting ability (feats and
+    /// homebrew sometimes swap it — e.g. an invocation that lets a
+    /// warlock use DEX for one blast). `None` = resolve from the
+    /// casting class (`Character::spell_ability`).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub casting_ability: Option<crate::Score>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -346,6 +352,7 @@ impl Spell {
 
         let s = Self {
             prepared: false,
+            casting_ability: None,
             name: value.name,
             desc: value.desc.join("\n"),
             range: value.range,

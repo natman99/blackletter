@@ -98,6 +98,7 @@ fn spell() {
     let spell = c.spells.spells.get("Magic Missile").unwrap();
     let s = Spell {
         prepared: false,
+        casting_ability: None,
         name: "Magic Missile".to_string(),
         desc: "Goes boom".to_string(),
         range: "12 toes".to_string(),

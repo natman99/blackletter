@@ -123,6 +123,7 @@ mod tests {
         Class {
             class,
             subclass: String::new(),
+            spellcasting_ability: None,
             level: Level(level),
             hit_dice: die,
             health_bonus_per_level: 0,

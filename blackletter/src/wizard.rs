@@ -1637,6 +1637,8 @@ mod tests {
         assert_eq!(race.ability_bonuses.len(), 2, "elf + high-elf bonuses");
         // HP: d6 max + CON mod (14 => +2) = 8.
         assert_eq!(c.health.max, 8, "hp {}", c.health.max);
+        // The class row's spellcasting ability landed on the sheet class.
+        assert_eq!(c.classes.classes[0].spellcasting_ability, Some(Score::Int));
         // Class saving-throw proficiencies landed (wizard: INT + WIS).
         assert!(c.saving_throws.int && c.saving_throws.wis);
         assert!(!c.saving_throws.str);

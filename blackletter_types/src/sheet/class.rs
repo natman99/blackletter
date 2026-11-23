@@ -12,7 +12,7 @@ use schemars::JsonSchema;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
-use crate::{AbilityScores, HitPoints, roll::Die};
+use crate::{AbilityScores, HitPoints, Score, roll::Die};
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -132,6 +132,11 @@ impl IndexMut<usize> for Classes {
 pub struct Class {
     pub class: ClassType,
     pub subclass: String,
+    /// The ability this class's spells use (from the class row's
+    /// `spellcasting.spellcasting_ability`). `None` = not a caster or
+    /// unknown; `Character::spell_ability` resolves per-spell overrides
+    /// on top of this.
+    pub spellcasting_ability: Option<Score>,
     #[cfg_attr(feature = "rhai", rhai_type(get = Self::get_level), rhai_type(set = Self::set_level))]
     pub level: Level,
     pub hit_dice: Die,
@@ -146,6 +151,7 @@ impl Default for Class {
         let hit_dice = class.get_hit_dice();
         Self {
             class,
+            spellcasting_ability: None,
             level: Default::default(),
             hit_dice,
             health_bonus_per_level: 0,
@@ -176,6 +182,11 @@ impl Class {
         Self {
             class,
             subclass: String::new(),
+            spellcasting_ability: db
+                .spellcasting
+                .as_ref()
+                .and_then(|sc| sc.spellcasting_ability.as_ref())
+                .and_then(|a| a.index.parse::<Score>().ok()),
             level: Level(1),
             hit_dice,
             health_bonus_per_level: 0,
@@ -222,6 +233,7 @@ impl Class {
         let class = ClassType::from_str(class).expect("Cannot fail");
         Self {
             subclass: "".to_string(),
+            spellcasting_ability: None,
             level,
             hit_dice: class.get_hit_dice(),
             health_bonus_per_level: 0,
