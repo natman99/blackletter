@@ -788,9 +788,10 @@ pub fn build_character(corpus: &Corpus, draft: &Draft) -> anyhow::Result<Charact
     // multiclassing grants NO saving throws when you take a new class
     // (Wiki/03:87 table), so this belongs to creation, not Add Class.
     for st in &class_db.saving_throws {
-        if let Some(name) = st.index.strip_prefix("saving-throw-")
-            && let Ok(score) = name.parse::<Score>()
-        {
+        // The saving_throws refs point straight at ability scores
+        // ("int", "wis"); the class proficiencies list carries the
+        // parallel "saving-throw-int" proficiency rows.
+        if let Ok(score) = st.index.parse::<Score>() {
             match score {
                 Score::Str => c.saving_throws.str = true,
                 Score::Dex => c.saving_throws.dex = true,
