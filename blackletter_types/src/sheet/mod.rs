@@ -1942,7 +1942,7 @@ mod tests {
         assert_eq!(sheet.spell_attack_bonus(&spell), 2 + 3);
         // A feat/homebrew override pinned on the spell wins.
         spell.casting_ability = Some(Score::Dex);
-        assert_eq!(sheet.spell_save_dc(&spell), 8 + 2 + 0);
+        assert_eq!(sheet.spell_save_dc(&spell), 10); // DEX +0, no INT
         // Unknown class + no override: falls back to the sheet's general
         // attack ability rather than guessing.
         let orphan = crate::spells::Spell {
