@@ -103,6 +103,29 @@ pub fn plan_level_up(
     })
 }
 
+/// SRD multiclassing prerequisites (Wiki/03:52). Multiple entries are
+/// AND ("Dexterity 13 and Wisdom 13"). The fighter's "Strength 13 or
+/// Dexterity 13" is the only OR — and the SRD JSON carries NO fighter
+/// prerequisites at all, so the table's rule is special-cased here.
+#[must_use]
+pub fn meets_multiclass_prerequisites(
+    scores: &AbilityScores,
+    class_index: &str,
+    mc: Option<&crate::database::class::MultiClassing>,
+) -> bool {
+    if class_index == "fighter" {
+        return scores.str.get() >= 13 || scores.dex.get() >= 13;
+    }
+    mc.is_none_or(|mc| {
+        mc.prerequisites.iter().all(|p| {
+            p.ability_score
+                .index
+                .parse::<Score>()
+                .is_ok_and(|score| scores.get(&score).get() >= i64::from(p.minimum_score))
+        })
+    })
+}
+
 impl Character {
     /// Apply a level-up plan. `hp_gain` is the rolled or fixed amount
     /// (caller decides; `plan.hp_fixed` is the fixed option). `asi`
@@ -153,6 +176,11 @@ impl Character {
             };
             s.base = (s.base + n).min(30);
         }
+        // The sheet's derived numbers ride the new level: proficiency
+        // bonus (off total level) and spell-slot tables (off caster
+        // level, pact kept separate).
+        self.sync_proficiency_bonus();
+        self.sync_spell_slots();
         true
     }
 
@@ -319,6 +347,30 @@ mod tests {
     }
 
     #[test]
+    fn apply_level_up_resyncs_proficiency_bonus_and_slots() {
+        let corpus = corpus();
+        let mut wiz = Character::new(
+            "W".into(),
+            1,
+            crate::sheet::HitPoints::new(8),
+            ClassType::Wizard,
+            AbilityScores::default(),
+        );
+        wiz.classes.classes[0].set_class("wizard");
+        wiz.sync_spell_slots();
+        assert_eq!(wiz.meters.meters["spell_slot_1"].slot_number, 2);
+        for lvl in 2..=5 {
+            let plan =
+                plan_level_up(&corpus, &ClassType::Wizard, lvl - 1, Some(""), 1).expect("plan");
+            wiz.apply_level_up(0, &plan, plan.hp_fixed, &[], None);
+        }
+        assert_eq!(wiz.classes.total_level(), 5);
+        assert_eq!(wiz.skills.proficiency_bonus, 3, "PB follows total level");
+        assert_eq!(wiz.meters.meters["spell_slot_1"].slot_number, 4);
+        assert_eq!(wiz.meters.meters["spell_slot_3"].slot_number, 2);
+    }
+
+    #[test]
     fn warlock_known_spell_gains_track_levels_json() {
         let corpus = corpus();
         // SRD warlock: 2 known at 1-2, 3 at 3.
@@ -327,6 +379,73 @@ mod tests {
         assert_eq!(p3.cantrips_known_gain, 0);
         let p4 = plan_level_up(&corpus, &ClassType::Warlock, 3, Some(""), 0).unwrap();
         assert_eq!(p4.cantrips_known_gain, 1);
+    }
+
+    #[test]
+    fn multiclass_prerequisites_and_proficiencies_parse() {
+        let corpus = corpus();
+        let wiz = corpus.class("wizard").expect("wizard");
+        let mc = wiz.multi_classing.as_ref().expect("multi_classing");
+        assert_eq!(mc.prerequisites.len(), 1);
+        assert_eq!(mc.prerequisites[0].ability_score.index, "int");
+        assert_eq!(mc.prerequisites[0].minimum_score, 13);
+        assert!(
+            mc.proficiencies.is_empty(),
+            "wizard grants none multiclassing"
+        );
+        let barb = corpus.class("barbarian").expect("barbarian");
+        let profs: Vec<&str> = barb
+            .multi_classing
+            .as_ref()
+            .unwrap()
+            .proficiencies
+            .iter()
+            .map(|p| p.index.as_str())
+            .collect();
+        assert_eq!(profs, ["shields", "simple-weapons", "martial-weapons"]);
+    }
+
+    #[test]
+    fn multiclass_prerequisite_checks_follow_the_srd_table() {
+        let corpus = corpus();
+        let mut scores = AbilityScores::default(); // all base 12
+        let wiz = corpus.class("wizard").unwrap();
+        assert!(
+            !meets_multiclass_prerequisites(&scores, "wizard", wiz.multi_classing.as_ref()),
+            "12 INT is not enough"
+        );
+        scores.int.base = 13;
+        assert!(meets_multiclass_prerequisites(
+            &scores,
+            "wizard",
+            wiz.multi_classing.as_ref()
+        ));
+
+        // Monk: Dex AND Wis.
+        let monk = corpus.class("monk").unwrap();
+        scores.int.base = 12;
+        scores.dex.base = 13;
+        assert!(
+            !meets_multiclass_prerequisites(&scores, "monk", monk.multi_classing.as_ref()),
+            "Wis still short"
+        );
+        scores.wis.base = 13;
+        assert!(meets_multiclass_prerequisites(
+            &scores,
+            "monk",
+            monk.multi_classing.as_ref()
+        ));
+
+        // Fighter: the SRD JSON row is empty, but the table says Str OR
+        // Dex 13 — special-cased.
+        let fighter = corpus.class("fighter").unwrap();
+        scores.dex.base = 12;
+        scores.wis.base = 12;
+        scores.str.base = 13;
+        assert!(
+            meets_multiclass_prerequisites(&scores, "fighter", fighter.multi_classing.as_ref()),
+            "STR 13 alone qualifies the fighter"
+        );
     }
 
     #[test]

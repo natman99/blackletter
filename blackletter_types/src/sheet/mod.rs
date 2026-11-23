@@ -24,6 +24,10 @@ pub mod feat;
 pub mod feature;
 pub mod grant;
 pub mod language;
+// Corpus-driven (the database modules it reads are serde-gated), so the
+// whole module rides the same feature — standalone `cargo test -p
+// blackletter_types` must not depend on workspace feature unification.
+#[cfg(feature = "serde")]
 pub mod levelup;
 pub mod lore;
 pub mod meter;
@@ -133,6 +137,7 @@ impl Character {
             background: None,
             classes: Classes {
                 classes: vec![Class {
+                    spellcasting_ability: None,
                     level: Level(level),
                     hit_dice: class.get_hit_dice(),
                     health_bonus_per_level: 0,
@@ -193,6 +198,41 @@ impl Character {
     }
     pub fn save_dc(&self) -> i64 {
         8 + self.skills.proficiency_bonus + self.ability_modifier_for(self.ability_modifier)
+    }
+
+    /// The ability a given spell uses for its attack roll / save DC.
+    /// Resolution order (SRD: each class's spells ride that class's
+    /// spellcasting ability, Wiki/02 class sections):
+    /// 1. the spell's own `casting_ability` override (feats/homebrew),
+    /// 2. the first class on this sheet that can cast the spell and has
+    ///    a `spellcasting_ability` (for multiclass overlap the player
+    ///    can pin the choice with the override),
+    /// 3. the sheet's general `ability_modifier` as a fallback.
+    #[must_use]
+    pub fn spell_ability(&self, spell: &crate::spells::Spell) -> Score {
+        if let Some(a) = spell.casting_ability {
+            return a;
+        }
+        for ct in &spell.classes {
+            if let Some(c) = self.classes.classes.iter().find(|c| &c.class == ct)
+                && let Some(a) = c.spellcasting_ability
+            {
+                return a;
+            }
+        }
+        self.ability_modifier
+    }
+
+    /// Save DC for one spell (per-class ability; multiclass-safe).
+    #[must_use]
+    pub fn spell_save_dc(&self, spell: &crate::spells::Spell) -> i64 {
+        8 + self.skills.proficiency_bonus + self.ability_modifier_for(self.spell_ability(spell))
+    }
+
+    /// Attack bonus for one spell attack (per-class ability).
+    #[must_use]
+    pub fn spell_attack_bonus(&self, spell: &crate::spells::Spell) -> i64 {
+        self.skills.proficiency_bonus + self.ability_modifier_for(self.spell_ability(spell))
     }
 
     pub fn initiative(&self) -> i64 {
@@ -1886,6 +1926,33 @@ mod tests {
     }
 
     #[test]
+    fn spell_ability_resolves_class_ability_then_per_spell_override() {
+        let mut sheet = leveled(ClassType::Wizard, 1);
+        sheet.ability_scores.int.base = 16; // +3
+        sheet.ability_scores.dex.base = 10; // +0
+        sheet.skills.proficiency_bonus = 2;
+        sheet.classes.classes[0].spellcasting_ability = Some(Score::Int);
+        let mut spell = crate::spells::Spell {
+            name: "Fire Bolt".into(),
+            classes: vec![ClassType::Wizard],
+            ..Default::default()
+        };
+        assert_eq!(sheet.spell_ability(&spell), Score::Int);
+        assert_eq!(sheet.spell_save_dc(&spell), 8 + 2 + 3);
+        assert_eq!(sheet.spell_attack_bonus(&spell), 2 + 3);
+        // A feat/homebrew override pinned on the spell wins.
+        spell.casting_ability = Some(Score::Dex);
+        assert_eq!(sheet.spell_save_dc(&spell), 8 + 2 + 0);
+        // Unknown class + no override: falls back to the sheet's general
+        // attack ability rather than guessing.
+        let orphan = crate::spells::Spell {
+            name: "Mystery".into(),
+            ..Default::default()
+        };
+        assert_eq!(sheet.spell_ability(&orphan), sheet.ability_modifier);
+    }
+
+    #[test]
     fn grant_meters_materialize_and_scale_with_pb() {
         use crate::sheet::meter::RestoreTime;
         let mut c = Character::new(
@@ -1951,6 +2018,7 @@ mod tests {
         let mut sheet = leveled(ClassType::Wizard, 3);
         sheet.classes.classes.push(Class {
             level: Level(3),
+            spellcasting_ability: None,
             hit_dice: ClassType::Paladin.get_hit_dice(),
             health_bonus_per_level: 0,
             class: ClassType::Paladin,
