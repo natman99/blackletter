@@ -784,6 +784,24 @@ pub fn build_character(corpus: &Corpus, draft: &Draft) -> anyhow::Result<Charact
     c.classes.classes[0] = class;
     c.race = Some(race.clone());
 
+    // Saving-throw proficiencies: the initial class's only. SRD
+    // multiclassing grants NO saving throws when you take a new class
+    // (Wiki/03:87 table), so this belongs to creation, not Add Class.
+    for st in &class_db.saving_throws {
+        if let Some(name) = st.index.strip_prefix("saving-throw-")
+            && let Ok(score) = name.parse::<Score>()
+        {
+            match score {
+                Score::Str => c.saving_throws.str = true,
+                Score::Dex => c.saving_throws.dex = true,
+                Score::Con => c.saving_throws.con = true,
+                Score::Int => c.saving_throws.int = true,
+                Score::Wis => c.saving_throws.wis = true,
+                Score::Cha => c.saving_throws.cha = true,
+            }
+        }
+    }
+
     // Background grant + its skill proficiencies (bitflags are the sheet's
     // proficiency truth; the grant carries the fiction).
     let bg_db = corpus.background(bi).ctx_missing("background", bi)?;
@@ -1618,6 +1636,9 @@ mod tests {
         assert_eq!(race.ability_bonuses.len(), 2, "elf + high-elf bonuses");
         // HP: d6 max + CON mod (14 => +2) = 8.
         assert_eq!(c.health.max, 8, "hp {}", c.health.max);
+        // Class saving-throw proficiencies landed (wizard: INT + WIS).
+        assert!(c.saving_throws.int && c.saving_throws.wis);
+        assert!(!c.saving_throws.str);
         // Background skills + class skill choices are proficiencies.
         assert!(c.skills.proficiencies.contains(Skill::Insight));
         assert!(c.skills.proficiencies.contains(Skill::Religion));
