@@ -1322,9 +1322,8 @@ impl Render for WizardView {
                     }))
                     .child(gate)
                     .child(
-                        self.scrollable(div()).children(
-                            lines.into_iter().map(|l| div().text_sm().child(l)),
-                        ),
+                        self.scrollable(div())
+                            .children(lines.into_iter().map(|l| div().text_sm().child(l))),
                     )
             }
         };
@@ -1908,9 +1907,7 @@ mod tests {
     /// focused entity is dropped, so the sheet must reclaim it before the
     /// wizard is released.
     #[gpui::test]
-    fn cancelling_the_wizard_hands_keyboard_focus_back_to_the_sheet(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn cancelling_the_wizard_hands_keyboard_focus_back_to_the_sheet(cx: &mut gpui::TestAppContext) {
         use crate::autosave::Autosave;
         use crate::session::Session;
         cx.update(|cx| {

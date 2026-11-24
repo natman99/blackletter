@@ -6,6 +6,7 @@ mod dungeon_view;
 mod field;
 mod files;
 mod form;
+mod levelup_view;
 mod picker;
 mod root;
 mod session;
@@ -32,6 +33,7 @@ fn main() {
         cx.bind_keys(picker::picker_keys());
         cx.bind_keys(form::form_keys());
         cx.bind_keys(wizard::wizard_keys());
+        cx.bind_keys(levelup_view::levelup_keys());
         autosave::Autosave::init(cx);
         // The SRD corpus loads once at startup (vendored `srd/`, see Task
         // 4.1); a missing corpus only disables the pickers, never the app.

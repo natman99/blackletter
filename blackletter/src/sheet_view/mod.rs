@@ -239,6 +239,8 @@ pub struct SheetView {
     field: Option<(FieldTarget, Field)>,
     /// The open SRD picker overlay, if any.
     picker: Option<Entity<Picker>>,
+    /// The open level-up overlay (plan Task 5.2).
+    levelup: Option<Entity<crate::levelup_view::LevelUpView>>,
     /// The open custom-entry form overlay, if any (plan Task 4.3).
     form: Option<Entity<crate::form::Form>>,
     /// Dice-tray result log, newest first (max 5).
@@ -271,6 +273,7 @@ impl SheetView {
             damage_type: DamageType::Bludgeoning,
             field: None,
             picker: None,
+            levelup: None,
             form: None,
             roll_log: Vec::new(),
             blank: Field::new(""),
@@ -536,8 +539,129 @@ impl SheetView {
         self.log_roll(line, cx);
     }
 
-    fn on_level_up(&mut self, _: &LevelUp, _: &mut Window, cx: &mut Context<Self>) {
-        self.on_adjust(1, cx);
+    fn on_level_up(&mut self, _: &LevelUp, window: &mut Window, cx: &mut Context<Self>) {
+        if self.levelup.is_some() || self.picker.is_some() || self.form.is_some() {
+            return;
+        }
+        // No corpus means no level rows to drive the flow: fall back to
+        // the quick +1 bump so the key never becomes a dead end.
+        let Some(corpus) = self.corpus.clone() else {
+            self.on_adjust(1, cx);
+            return;
+        };
+        let Some((plan, _con)) = crate::levelup_view::LevelUpView::plan_for(
+            &corpus,
+            &self.doc.character,
+            self.class_sel,
+        ) else {
+            self.report(
+                "no level-up available (level 20, or class not in corpus)",
+                cx,
+            );
+            return;
+        };
+        let cl = &self.doc.character.classes.classes[self.class_sel];
+        let label = format!("{} {}", cl.class, cl.get_level());
+        let scores = &self.doc.character.ability_scores;
+        let bases = [
+            scores.str.base,
+            scores.dex.base,
+            scores.con.base,
+            scores.int.base,
+            scores.wis.base,
+            scores.cha.base,
+        ];
+        let sheet = cx.entity().downgrade();
+        let view = cx.new(|cx| {
+            crate::levelup_view::LevelUpView::new(
+                plan,
+                label,
+                bases,
+                move |outcome, window, cx| {
+                    sheet
+                        .update(cx, |v, cx| v.on_levelup_done(outcome, window, cx))
+                        .ok();
+                },
+                cx,
+            )
+        });
+        self.levelup = Some(view.clone());
+        window.focus(&view.read(cx).focus_handle(cx), cx);
+        self.report("level up: follow the steps (enter next, esc cancel)", cx);
+        cx.notify();
+    }
+
+    /// The level-up overlay's answer: apply the plan to the sheet in one
+    /// undo snapshot, then chain the feat picker if the ASI was swapped.
+    fn on_levelup_done(
+        &mut self,
+        outcome: crate::levelup_view::LevelUpOutcome,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Focus back BEFORE releasing the overlay entity (gpui clears
+        // window focus after the update frame when the focused entity
+        // is dropped mid-frame).
+        window.focus(&self.focus_handle, cx);
+        self.levelup = None;
+        let crate::levelup_view::LevelUpOutcome::Apply {
+            hp_gain,
+            asi,
+            subclass,
+            feat_instead_of_asi,
+        } = outcome
+        else {
+            self.report("level-up cancelled", cx);
+            cx.notify();
+            return;
+        };
+        let Some(corpus) = self.corpus.clone() else {
+            cx.notify();
+            return;
+        };
+        let class_pos = self.class_sel;
+        let sub = subclass.clone();
+        let res = self.doc.try_edit(|c| {
+            let plan = crate::levelup_view::LevelUpView::plan_for(&corpus, c, class_pos)
+                .ok_or(())?
+                .0;
+            if !c.apply_level_up(
+                class_pos,
+                &plan,
+                hp_gain,
+                &asi,
+                sub.as_ref().map(|(i, n)| (i.as_str(), n.as_str())),
+            ) {
+                return Err(());
+            }
+            if let Some((i, _)) = &sub {
+                c.grant_subclass_features(&corpus, &plan.class_index, i, plan.new_level);
+            }
+            c.sync_proficiency_bonus();
+            c.sync_spell_slots();
+            Ok(())
+        });
+        match &res {
+            Ok(()) => {
+                let c = &self.doc.character;
+                let cl = &c.classes.classes[class_pos];
+                self.report(
+                    format!(
+                        "{} is level {} (+{} HP, PB {})",
+                        cl.class,
+                        cl.get_level(),
+                        hp_gain,
+                        c.skills.proficiency_bonus
+                    ),
+                    cx,
+                );
+            }
+            Err(_) => self.report("level-up could not be applied", cx),
+        }
+        cx.notify();
+        if res.is_ok() && feat_instead_of_asi {
+            self.open_picker(crate::picker::PickKind::Feat, window, cx);
+        }
     }
 
     fn on_level_down(&mut self, _: &LevelDown, _: &mut Window, cx: &mut Context<Self>) {
@@ -2913,6 +3037,20 @@ impl Render for SheetView {
                         .child(p),
                 )
             })
+            // The level-up overlay rides the same scrim treatment.
+            .when_some(self.levelup.clone(), |d, l| {
+                d.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .bg(gpui::hsla(0., 0., 0., 0.45))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .pt(gpui::px(56.))
+                        .child(l),
+                )
+            })
             // The custom-entry form rides the same scrim treatment.
             .when_some(self.form.clone(), |d, f| {
                 d.child(
@@ -3009,14 +3147,29 @@ mod tests {
             cx.bind_keys(crate::field::field_keys(crate::dungeon_view::FIELD_CTX));
             cx.bind_keys(crate::picker::picker_keys());
             cx.bind_keys(crate::form::form_keys());
+            cx.bind_keys(crate::levelup_view::levelup_keys());
             Autosave::init(cx);
         });
         let window = match window_size {
             Some(size) => cx.open_window(size, |_, cx| {
-                RootView::new(cx, Session::default(), None, corpus.clone(), Library::default(), None)
+                RootView::new(
+                    cx,
+                    Session::default(),
+                    None,
+                    corpus.clone(),
+                    Library::default(),
+                    None,
+                )
             }),
             None => cx.add_window(|_, cx| {
-                RootView::new(cx, Session::default(), None, corpus, Library::default(), None)
+                RootView::new(
+                    cx,
+                    Session::default(),
+                    None,
+                    corpus,
+                    Library::default(),
+                    None,
+                )
             }),
         };
         window
@@ -3053,6 +3206,130 @@ mod tests {
             cx.read(|cx| view.read(cx).doc().character.classes.total_level()),
             1
         );
+    }
+
+    #[gpui::test]
+    fn level_up_overlay_walks_a_fighter_from_1_to_2(cx: &mut TestAppContext) {
+        let (window, root) = open_sheet_with(cx, Some(test_corpus()));
+        let view = sheet(cx, &root);
+        let hp0 = cx.read(|cx| view.read(cx).doc().character.health.max);
+        cx.simulate_keystrokes(window.into(), "equal");
+        cx.run_until_parked();
+        assert!(
+            cx.read(|cx| view.read(cx).levelup.is_some()),
+            "the overlay opens on + in Basic"
+        );
+        // HP step: enter accepts the fixed gain; confirm: enter applies.
+        cx.simulate_keystrokes(window.into(), "enter enter");
+        cx.run_until_parked();
+        cx.read(|cx| {
+            let v = view.read(cx);
+            assert!(v.levelup.is_none(), "overlay closed after confirm");
+            let c = &v.doc.character;
+            assert_eq!(c.classes[0].get_level(), 2);
+            // CON 10 (mod 0): fixed gain is d10/2 + 1 + 0 = 6.
+            assert_eq!(c.health.max, hp0 + 6);
+            assert!(
+                c.features
+                    .inner
+                    .iter()
+                    .any(|f| f.name.contains("Action Surge")),
+                "level-2 grant landed"
+            );
+        });
+        // One ctrl-z walks the whole level-up back (single undo snapshot).
+        cx.simulate_keystrokes(window.into(), "ctrl-z");
+        cx.run_until_parked();
+        cx.read(|cx| {
+            let c = &view.read(cx).doc().character;
+            assert_eq!(c.classes[0].get_level(), 1, "undo reverts the level");
+            assert_eq!(c.health.max, hp0, "undo reverts the HP");
+        });
+    }
+
+    #[gpui::test]
+    fn level_up_overlay_esc_cancels_without_touching_the_sheet(cx: &mut TestAppContext) {
+        let (window, root) = open_sheet_with(cx, Some(test_corpus()));
+        let view = sheet(cx, &root);
+        let hp0 = cx.read(|cx| view.read(cx).doc().character.health.max);
+        cx.simulate_keystrokes(window.into(), "equal r escape");
+        cx.run_until_parked();
+        cx.read(|cx| {
+            let v = view.read(cx);
+            assert!(v.levelup.is_none(), "esc closes the overlay");
+            let c = &v.doc.character;
+            assert_eq!(c.classes[0].get_level(), 1, "level untouched");
+            assert_eq!(c.health.max, hp0, "HP untouched");
+        });
+        // Keyboard focus came back to the sheet: `]` moves sections.
+        cx.simulate_keystrokes(window.into(), "]");
+        cx.run_until_parked();
+        assert_eq!(
+            cx.read(|cx| view.read(cx).section),
+            Section::Abilities,
+            "focus is back on the sheet after cancel"
+        );
+    }
+
+    #[gpui::test]
+    fn level_up_overlay_prompts_subclass_at_3_and_asi_at_4(cx: &mut TestAppContext) {
+        let (window, root) = open_sheet_with(cx, Some(test_corpus()));
+        let view = sheet(cx, &root);
+        // L1 -> L2 (HP, confirm).
+        cx.simulate_keystrokes(window.into(), "equal enter enter");
+        cx.run_until_parked();
+        // L2 -> L3: HP enter, subclass step accepts the first option
+        // (champion, per the corpus order the engine tests rely on),
+        // confirm enter.
+        cx.simulate_keystrokes(window.into(), "equal enter enter enter");
+        cx.run_until_parked();
+        cx.read(|cx| {
+            let c = &view.read(cx).doc().character;
+            assert_eq!(c.classes[0].get_level(), 3);
+            assert_eq!(c.classes[0].subclass, "champion", "subclass applied");
+            assert!(
+                c.features
+                    .inner
+                    .iter()
+                    .any(|f| f.name.contains("Improved Critical")),
+                "champion level-3 feature granted"
+            );
+        });
+        // L3 -> L4: HP enter; ASI step: row 0 (STR) is selected, two
+        // bumps, confirm.
+        cx.simulate_keystrokes(window.into(), "equal enter equal equal enter enter");
+        cx.run_until_parked();
+        cx.read(|cx| {
+            let c = &view.read(cx).doc().character;
+            assert_eq!(c.classes[0].get_level(), 4);
+            assert_eq!(c.ability_scores.str.base, 12, "STR +2 from the ASI");
+        });
+    }
+
+    #[gpui::test]
+    fn level_up_asi_can_swap_for_a_feat_and_chains_the_picker(cx: &mut TestAppContext) {
+        let (window, root) = open_sheet_with(cx, Some(test_corpus()));
+        let view = sheet(cx, &root);
+        // Two quick levels first (no corpus-free path here: the overlay
+        // drives everything once a corpus is loaded).
+        cx.simulate_keystrokes(window.into(), "equal enter enter");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "equal enter enter enter");
+        cx.run_until_parked();
+        // L4: HP enter, ASI step: `f` swaps the ASI for a feat, enter,
+        // confirm.
+        cx.simulate_keystrokes(window.into(), "equal enter f enter enter");
+        cx.run_until_parked();
+        cx.read(|cx| {
+            let v = view.read(cx);
+            let c = &v.doc.character;
+            assert_eq!(c.classes[0].get_level(), 4);
+            assert_eq!(
+                c.ability_scores.str.base, 10,
+                "no ASI bumps with feat chosen"
+            );
+            assert!(v.picker.is_some(), "the feat picker chained open");
+        });
     }
 
     #[gpui::test]

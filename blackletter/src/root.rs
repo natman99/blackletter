@@ -609,34 +609,39 @@ impl Render for RootView {
             // without it this row grows past the window and the sheet's
             // scroll viewport never engages at short window heights.
             .child(
-                div().flex_1().min_h_0().flex().bg(gpui::rgb(0x24_24_30)).child(
-                    match (
-                        self.wizard.clone(),
-                        self.mode,
-                        self.dungeon.clone(),
-                        self.sheet.clone(),
-                    ) {
-                        (Some(view), _, _, _) => view.into_any_element(),
-                        (None, Mode::Dungeon, Some(view), _) => view.into_any_element(),
-                        (None, Mode::Dungeon, None, _) => div()
-                            .size_full()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_2xl()
-                            .child("Dungeon mode — open a campaign (ctrl-O)")
-                            .into_any_element(),
-                        (None, Mode::Sheet, _, Some(view)) => view.into_any_element(),
-                        (None, Mode::Sheet, _, None) => div()
-                            .size_full()
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .text_2xl()
-                            .child("Sheet mode — open a campaign (ctrl-O)")
-                            .into_any_element(),
-                    },
-                ),
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .bg(gpui::rgb(0x24_24_30))
+                    .child(
+                        match (
+                            self.wizard.clone(),
+                            self.mode,
+                            self.dungeon.clone(),
+                            self.sheet.clone(),
+                        ) {
+                            (Some(view), _, _, _) => view.into_any_element(),
+                            (None, Mode::Dungeon, Some(view), _) => view.into_any_element(),
+                            (None, Mode::Dungeon, None, _) => div()
+                                .size_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_2xl()
+                                .child("Dungeon mode — open a campaign (ctrl-O)")
+                                .into_any_element(),
+                            (None, Mode::Sheet, _, Some(view)) => view.into_any_element(),
+                            (None, Mode::Sheet, _, None) => div()
+                                .size_full()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .text_2xl()
+                                .child("Sheet mode — open a campaign (ctrl-O)")
+                                .into_any_element(),
+                        },
+                    ),
             )
             // Bottom: the status bar (chonk: 22px + gap).
             .child(
