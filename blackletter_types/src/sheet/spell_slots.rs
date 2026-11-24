@@ -80,7 +80,11 @@ const PACT_TABLE: [(i64, i64); 20] = [
 /// Slots for a given effective caster level (1..=20): spell level -> count.
 #[must_use]
 pub fn full_caster_slots(level: i64) -> BTreeMap<i64, i64> {
-    let level = level.clamp(1, 20) as usize - 1;
+    if level < 1 {
+        // Not a caster at all: no slots, no clamping up to the level-1 row.
+        return BTreeMap::new();
+    }
+    let level = level.min(20) as usize - 1;
     let mut out = BTreeMap::new();
     for (i, &count) in FULL_CASTER_TABLE[level].iter().enumerate() {
         if count > 0 {
@@ -117,6 +121,14 @@ mod tests {
         assert_eq!(full_caster_slots(12).get(&7), None);
         assert_eq!(full_caster_slots(13).get(&7), Some(&1));
         assert_eq!(full_caster_slots(16).get(&9), None);
+    }
+
+    #[test]
+    fn non_casters_get_no_slots() {
+        // A fighter (caster level 0) must NOT clamp up to the level-1
+        // row — that phantom gave martials 2 level-1 slots.
+        assert!(full_caster_slots(0).is_empty());
+        assert!(full_caster_slots(-3).is_empty());
     }
 
     #[test]

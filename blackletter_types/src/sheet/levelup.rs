@@ -25,6 +25,10 @@ pub struct LevelUpPlan {
     pub hp_fixed: i64,
     /// Feature names granted at this level (corpus rows, display names).
     pub feature_names: Vec<String>,
+    /// Charge meters for features whose names carry "(N uses)"
+    /// (Action Surge, Indomitable); attached as `Effect::Meter` on
+    /// grant.
+    pub feature_meters: Vec<crate::sheet::meter::Meter>,
     /// ASI points at this level (2 per ASI; 0 = no ASI here).
     pub asi_points: i32,
     /// Non-empty when this is the class's subclass level and the sheet
@@ -53,11 +57,16 @@ pub fn plan_level_up(
     let prev = rows.iter().find(|l| i64::from(l.level) == current_level);
 
     let hit_die_max = i64::from(class.get_hit_dice().max());
-    let feature_names = row
-        .features
-        .iter()
-        .filter_map(|f| corpus.feature(&f.index).map(|f| f.name.clone()))
-        .collect();
+    let mut feature_names = Vec::new();
+    let mut feature_meters = Vec::new();
+    for f in &row.features {
+        if let Some(f) = corpus.feature(&f.index) {
+            feature_names.push(f.name.clone());
+            if let Some(m) = crate::sheet::feature::charge_meter(&f.name, &f.desc.join("\n")) {
+                feature_meters.push(m);
+            }
+        }
+    }
 
     let asi_delta = row.ability_score_bonuses - prev.map_or(0, |p| p.ability_score_bonuses);
     debug_assert!(
@@ -96,6 +105,7 @@ pub fn plan_level_up(
         hit_die_max,
         hp_fixed: hit_die_max / 2 + 1 + con_mod,
         feature_names,
+        feature_meters,
         asi_points: asi_delta * 2,
         subclass_options,
         spells_known_gain: gain(|p| p.spells_known),
@@ -177,10 +187,17 @@ impl Character {
 
         for name in &plan.feature_names {
             if !self.has_grant(name) {
+                let effects = plan
+                    .feature_meters
+                    .iter()
+                    .filter(|m| &m.name == name)
+                    .cloned()
+                    .map(crate::feature::Effect::Meter)
+                    .collect();
                 self.add_feature(Feature {
                     name: name.clone(),
                     source: Some(Source::Single("SRD (2014)".into())),
-                    effects: Vec::new(),
+                    effects,
                 });
             }
         }
@@ -222,10 +239,12 @@ impl Character {
                 if let Some(f) = corpus.feature(&f.index)
                     && !self.has_grant(&f.name)
                 {
+                    let effects = crate::sheet::feature::charge_meter(&f.name, &f.desc.join("\n"))
+                        .map_or_else(Vec::new, |m| vec![crate::feature::Effect::Meter(m)]);
                     self.add_feature(Feature {
                         name: f.name.clone(),
                         source: Some(Source::Single("SRD (2014)".into())),
-                        effects: Vec::new(),
+                        effects,
                     });
                 }
             }
@@ -262,6 +281,23 @@ mod tests {
         );
         c.classes.classes[0].set_class("fighter");
         c
+    }
+
+    #[test]
+    fn fighter_level_2_gets_action_surge_charges() {
+        let corpus = corpus();
+        let mut c = fighter(0);
+        let plan = plan_level_up(&corpus, &ClassType::Fighter, 1, Some(""), 0).unwrap();
+        assert!(c.apply_level_up(0, &plan, plan.hp_fixed, &[], None));
+        let m = c
+            .meters
+            .meters
+            .get("Action Surge (1 use)")
+            .expect("action surge charge meter");
+        assert_eq!(m.slot_number, 1);
+        assert!(m.restore.short_rest);
+        // And the phantom spell slots are gone for good.
+        assert!(!c.meters.meters.contains_key("spell_slot_1"));
     }
 
     #[test]

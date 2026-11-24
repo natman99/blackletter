@@ -25,7 +25,8 @@ actions!(
         OpenCampaign,
         PrevDungeon,
         NextDungeon,
-        NewCharacter
+        NewCharacter,
+        SwitchCharacter
     ]
 );
 
@@ -40,6 +41,7 @@ pub fn keybindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-o", OpenCampaign, None),
         KeyBinding::new("ctrl-,", PrevDungeon, None),
         KeyBinding::new("ctrl-.", NextDungeon, None),
+        KeyBinding::new("ctrl-p", SwitchCharacter, None),
     ]
 }
 
@@ -67,6 +69,8 @@ pub struct RootView {
     sheet: Option<Entity<SheetView>>,
     /// The new-character wizard (plan Task 5.1), open as a full view.
     wizard: Option<Entity<crate::wizard::WizardView>>,
+    /// The character-switch picker (ctrl-p).
+    picker: Option<Entity<crate::picker::Picker>>,
 }
 
 impl RootView {
@@ -97,6 +101,7 @@ impl RootView {
             dungeon: None,
             sheet: None,
             wizard: None,
+            picker: None,
         }
     }
 
@@ -334,6 +339,90 @@ impl RootView {
             .unwrap_or(0);
         let next = (idx as i32 + delta).rem_euclid(list.len() as i32) as usize;
         let path = list[next].clone();
+        self.open_sheet_at(&campaign.characters_dir(), &path, window, cx);
+    }
+
+    /// `ctrl-p`: a picker over the campaign's characters (the cycle keys
+    /// stay for quick switching; this is the "jump straight there" path).
+    fn on_switch_character(
+        &mut self,
+        _: &SwitchCharacter,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.picker.is_some() {
+            return;
+        }
+        let Some(root) = self.session.campaign.clone() else {
+            self.set_status("no campaign open (ctrl-O)", cx);
+            return;
+        };
+        let campaign = crate::campaign::Campaign { root };
+        let list = campaign.list_characters();
+        if list.is_empty() {
+            self.set_status("no sheets in this campaign", cx);
+            return;
+        }
+        let rows: Vec<(String, String, String)> = list
+            .iter()
+            .map(|p| {
+                let name = p
+                    .file_stem()
+                    .map_or_else(|| "?".to_string(), |s| s.to_string_lossy().into_owned());
+                (p.display().to_string(), name, String::new())
+            })
+            .collect();
+        let root_ent = cx.entity().downgrade();
+        let picker = cx.new(|cx| {
+            crate::picker::Picker::with_rows(
+                crate::picker::PickKind::Character,
+                rows,
+                move |outcome, window, cx| {
+                    root_ent
+                        .update(cx, |r, cx| r.on_character_pick(outcome, window, cx))
+                        .ok();
+                },
+                cx,
+            )
+        });
+        self.picker = Some(picker.clone());
+        window.focus(&picker.read(cx).focus_handle(cx), cx);
+        self.set_status(
+            "character picker: type to filter, enter opens, esc closes",
+            cx,
+        );
+    }
+
+    fn on_character_pick(
+        &mut self,
+        outcome: crate::picker::PickerOutcome,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.picker = None;
+        if let crate::picker::PickerOutcome::Chosen(index) = outcome {
+            let path = PathBuf::from(&index);
+            let dir = path
+                .parent()
+                .map_or_else(|| PathBuf::from("."), |p| p.to_path_buf());
+            self.open_sheet_at(&dir, &path, window, cx);
+            return;
+        }
+        if let Some(view) = self.sheet.as_ref() {
+            window.focus(&view.read(cx).focus_handle(cx), cx);
+        } else {
+            window.focus(&self.focus_handle, cx);
+        }
+    }
+
+    /// Close the current sheet (saving if dirty) and open `path`.
+    fn open_sheet_at(
+        &mut self,
+        characters_dir: &std::path::Path,
+        path: &std::path::Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Some(view) = self.sheet.take() {
             let id = view.entity_id();
             view.update(cx, |v, _| {
@@ -341,10 +430,11 @@ impl RootView {
             });
             cx.global_mut::<Autosave>().unregister(id);
         }
-        match SheetDoc::load(&path) {
+        match SheetDoc::load(path) {
             Ok(doc) => {
+                let _ = characters_dir;
                 let name = doc.character.name.clone();
-                let view = self.build_sheet_with(doc, Some(campaign.characters_dir()), cx);
+                let view = self.build_sheet_with(doc, Some(characters_dir.to_path_buf()), cx);
                 window.focus(&view.read(cx).focus_handle(cx), cx);
                 self.set_status(format!("opened sheet {name}"), cx);
             }
@@ -596,6 +686,7 @@ impl Render for RootView {
             .on_action(cx.listener(Self::on_prev_dungeon))
             .on_action(cx.listener(Self::on_next_dungeon))
             .on_action(cx.listener(Self::on_new_character))
+            .on_action(cx.listener(Self::on_switch_character))
             // Top bar: mode tabs.
             .child(
                 div()
@@ -641,7 +732,20 @@ impl Render for RootView {
                                 .child("Sheet mode — open a campaign (ctrl-O)")
                                 .into_any_element(),
                         },
-                    ),
+                    )
+                    .when_some(self.picker.clone(), |d, p| {
+                        d.child(
+                            div()
+                                .absolute()
+                                .inset_0()
+                                .bg(gpui::hsla(0., 0., 0., 0.45))
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .pt(gpui::px(56.))
+                                .child(p),
+                        )
+                    }),
             )
             // Bottom: the status bar (chonk: 22px + gap).
             .child(

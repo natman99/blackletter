@@ -18,6 +18,7 @@ use blackletter_types::{
     database::corpus::Corpus,
     library::Library,
     roll::Advantage,
+    sheet::feature::Effect,
     sheet::proficiencies::{ArmorProf, WeaponProf},
     skills::Skill,
 };
@@ -29,6 +30,8 @@ use gpui::{
 
 pub use doc::SheetDoc;
 
+use crate::asi_view::{ASI_CTX, AsiOutcome, AsiView};
+use crate::class_view::{CLASS_CTX, ClassInfoView, ClassNext, ClassPrev, CloseClassInfo};
 use crate::field::{Field, FieldElement, FieldOwner};
 use crate::picker::{PickKind, Picker, PickerOutcome};
 use crate::root::RootView;
@@ -63,6 +66,10 @@ actions!(
         TrayDamage,
         OpenPicker,
         NewCustom,
+        ExpandRow,
+        UseCharge,
+        DeleteGrant,
+        RemoveClass,
     ]
 );
 
@@ -92,8 +99,14 @@ pub fn keybindings() -> Vec<KeyBinding> {
         "-" => LevelDown,
         "subtract" => LevelDown,
         "m" => AddClass,
-        "enter" => EditName,
+        // enter is the READ key (expand description / class details);
+        // rename lives on `e` and only does anything on the Basic tab.
+        "enter" => ExpandRow,
+        "e" => EditName,
         "space" => ToggleRow,
+        "u" => UseCharge,
+        "shift-d" => DeleteGrant,
+        "shift-m" => RemoveClass,
         "d" => QuickDamage,
         "f" => QuickHeal,
         "z" => RestoreSlot,
@@ -255,6 +268,13 @@ pub struct SheetView {
     levelup: Option<Entity<crate::levelup_view::LevelUpView>>,
     /// The open custom-entry form overlay, if any (plan Task 4.3).
     form: Option<Entity<crate::form::Form>>,
+    /// The class-detail popup opened by enter on the Basic tab.
+    class_info: Option<Entity<ClassInfoView>>,
+    asi: Option<Entity<AsiView>>,
+    /// Row whose full description is expanded for reading (enter toggles).
+    expanded: Option<(Section, usize)>,
+    /// Row armed for deletion by the two-keystroke `D` confirm.
+    armed_delete: Option<usize>,
     /// Dice-tray result log, newest first (max 5).
     roll_log: Vec<String>,
     log_scroll: gpui::ScrollHandle,
@@ -290,6 +310,10 @@ impl SheetView {
             picker: None,
             levelup: None,
             form: None,
+            class_info: None,
+            asi: None,
+            expanded: None,
+            armed_delete: None,
             roll_log: Vec::new(),
             log_scroll: gpui::ScrollHandle::new(),
             last_cast_slot: None,
@@ -327,6 +351,7 @@ impl SheetView {
     fn on_next_section(&mut self, _: &NextSection, _: &mut Window, cx: &mut Context<Self>) {
         self.section = self.section.next();
         self.sel = 0;
+        self.armed_delete = None;
         // Top strategy (not minimal-scroll): the stale child_bounds from
         // the outgoing section make a FirstVisible pass a no-op.
         self.scroll.scroll_to_top_of_item(0);
@@ -336,6 +361,7 @@ impl SheetView {
     fn on_prev_section(&mut self, _: &PrevSection, _: &mut Window, cx: &mut Context<Self>) {
         self.section = self.section.prev();
         self.sel = 0;
+        self.armed_delete = None;
         self.scroll.scroll_to_top_of_item(0);
         cx.notify();
     }
@@ -630,6 +656,7 @@ impl SheetView {
             asi,
             subclass,
             feat_instead_of_asi,
+            asi_offered,
         } = outcome
         else {
             self.report("level-up cancelled", cx);
@@ -680,8 +707,14 @@ impl SheetView {
             Err(_) => self.report("level-up could not be applied", cx),
         }
         cx.notify();
-        if res.is_ok() && feat_instead_of_asi {
+        if res.is_ok() && (feat_instead_of_asi || asi_offered) {
+            // The feat picker doubles as the ASI decision menu: it leads
+            // with an ASI row so the swap is reversible and a skipped
+            // ASI is never silently lost.
             self.open_picker(crate::picker::PickKind::Feat, window, cx);
+            if let Some(p) = &self.picker {
+                p.update(cx, |p, _| p.add_asi_row());
+            }
         }
     }
 
@@ -792,12 +825,19 @@ impl SheetView {
             }
             for f in corpus.level_features(class_index, 1) {
                 if !c.has_grant(&f.name) {
+                    let effects = blackletter_types::sheet::feature::charge_meter(
+                        &f.name,
+                        &f.desc.join("\n"),
+                    )
+                    .map_or_else(Vec::new, |m| {
+                        vec![blackletter_types::feature::Effect::Meter(m)]
+                    });
                     c.add_feature(blackletter_types::feature::Feature {
                         name: f.name.clone(),
                         source: Some(blackletter_types::sheet::source::Source::Single(
                             "SRD (2014)".into(),
                         )),
-                        effects: Vec::new(),
+                        effects,
                     });
                 }
             }
@@ -1284,6 +1324,18 @@ impl SheetView {
     }
 
     fn on_edit_name(&mut self, _: &EditName, _: &mut Window, cx: &mut Context<Self>) {
+        if self.picker.is_some()
+            || self.levelup.is_some()
+            || self.form.is_some()
+            || self.class_info.is_some()
+            || self.asi.is_some()
+        {
+            return;
+        }
+        if self.section != Section::Basic {
+            self.report("rename lives on the Basic tab ([ ] to switch)", cx);
+            return;
+        }
         let initial = self.doc.character.name.clone();
         let mut f = Field::new(&initial);
         f.select_all();
@@ -1526,14 +1578,19 @@ impl SheetView {
             }
             PickKind::Feature => {
                 let desc = get("description");
+                let meter = blackletter_types::sheet::feature::charge_meter(&name, &desc);
+                let mut effects = if desc.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![blackletter_types::sheet::feature::Effect::Custom(desc)]
+                };
+                if let Some(m) = meter {
+                    effects.push(blackletter_types::sheet::feature::Effect::Meter(m));
+                }
                 let feat = blackletter_types::feature::Feature {
                     name: name.clone(),
                     source: None,
-                    effects: if desc.is_empty() {
-                        Vec::new()
-                    } else {
-                        vec![blackletter_types::sheet::feature::Effect::Custom(desc)]
-                    },
+                    effects,
                 };
                 let dup = self.library.update(cx, |lib, _| {
                     lib.features.insert(name.clone(), feat).is_some()
@@ -1556,7 +1613,11 @@ impl SheetView {
                 cx.notify();
                 return;
             }
-            PickKind::Race | PickKind::Class | PickKind::Background | PickKind::Subrace => {
+            PickKind::Race
+            | PickKind::Class
+            | PickKind::Background
+            | PickKind::Subrace
+            | PickKind::Character => {
                 unreachable!("on_new_custom rejects these kinds")
             }
         };
@@ -1595,6 +1656,7 @@ impl SheetView {
             PickKind::Trait => "trait",
             PickKind::Race => "race",
             PickKind::Class | PickKind::Background | PickKind::Subrace => "entry",
+            PickKind::Character => "character",
         };
         if saved {
             self.report(
@@ -1620,7 +1682,15 @@ impl SheetView {
         self.picker = None;
         window.focus(&self.focus_handle, cx);
         match outcome {
-            PickerOutcome::Chosen(index) => self.apply_pick(kind, &index, cx),
+            PickerOutcome::Chosen(index) => {
+                if index == "asi" {
+                    // The synthetic ASI row: swap the feat picker for
+                    // the ASI menu (budget of 2, PHB rules).
+                    self.open_asi_menu(2, window, cx);
+                    return;
+                }
+                self.apply_pick(kind, &index, cx);
+            }
             PickerOutcome::Cancelled => self.report("picker closed", cx),
         }
         cx.notify();
@@ -1722,6 +1792,10 @@ impl SheetView {
                 // Wizard-only kinds; the sheet never opens these pickers.
                 self.report("that picker belongs to the creation wizard", cx);
             }
+            PickKind::Character => {
+                // Root-owned: the character switcher never reaches the sheet.
+                self.report("the character picker is handled by the app root", cx);
+            }
             PickKind::Feature => {
                 let Some(db) = corpus.feature(index).cloned() else {
                     self.report("corpus entry vanished", cx);
@@ -1821,6 +1895,7 @@ impl SheetView {
                 self.report(format!("added trait {name}"), cx);
             }
             PickKind::Class | PickKind::Background | PickKind::Subrace => (),
+            PickKind::Character => (),
             PickKind::Feature => {
                 let Some(feat) = lib.features.get(&name).cloned() else {
                     self.report("library entry vanished", cx);
@@ -2081,8 +2156,15 @@ impl SheetView {
                         cx.notify();
                     }))
                     .child(format!(
-                        "{} — level {} ({:?} hit die)",
-                        cl.class, cl.level.0, cl.hit_dice
+                        "{} — level {} ({:?} hit die){}",
+                        cl.class,
+                        cl.level.0,
+                        cl.hit_dice,
+                        if i == 0 && c.classes.classes.len() > 1 {
+                            "  [first]"
+                        } else {
+                            ""
+                        }
                     ))
             })
             .collect();
@@ -2118,7 +2200,7 @@ impl SheetView {
                     .mt_1()
                     .text_sm()
                     .text_color(gpui::rgb(0x6c_70_86))
-                    .child("CLASSES (j/k select, +/- level)"),
+                    .child("CLASSES (j/k select, +/- level, enter details, M remove class)"),
             )
             .children(classes)
             .into_any_element()
@@ -2462,30 +2544,39 @@ impl SheetView {
             })
             .collect();
         let nslots = slots.len();
-        rows.extend(
-            self.spell_rows()
-                .iter()
-                .enumerate()
-                .map(|(j, (name, level))| {
-                    let s = &c.spells.spells[name];
-                    let mark = if *level == 0 {
-                        "c"
-                    } else if prepared_caster {
-                        if s.prepared { "P" } else { "-" }
-                    } else {
-                        "k"
-                    };
-                    self.row(
-                        nslots + j,
-                        format!(
-                            "[{mark}] {name}  L{level}{}{}",
-                            if s.concentration { "  conc" } else { "" },
-                            if s.ritual { "  ritual" } else { "" },
-                        ),
-                        cx,
-                    )
-                }),
-        );
+        for (j, (name, level)) in self.spell_rows().iter().enumerate() {
+            let s = &c.spells.spells[name];
+            let mark = if *level == 0 {
+                "c"
+            } else if prepared_caster {
+                if s.prepared { "P" } else { "-" }
+            } else {
+                "k"
+            };
+            rows.push(self.row(
+                nslots + j,
+                format!(
+                    "[{mark}] {name}  L{level}{}{}",
+                    if s.concentration { "  conc" } else { "" },
+                    if s.ritual { "  ritual" } else { "" },
+                ),
+                cx,
+            ));
+            if self.expanded == Some((Section::Spells, nslots + j)) {
+                rows.push(
+                    div()
+                        .id(("spell-desc", j))
+                        .max_h(gpui::px(200.))
+                        .overflow_y_scroll()
+                        .px_4()
+                        .py_1()
+                        .text_sm()
+                        .text_color(gpui::rgb(0xba_b2_c8))
+                        .child(s.desc.clone())
+                        .into_any_element(),
+                );
+            }
+        }
         self.scrollable(div())
             .flex()
             .flex_col()
@@ -2503,7 +2594,7 @@ impl SheetView {
                     .text_sm()
                     .text_color(gpui::rgb(0x6c_70_86))
                     .child(
-                        "j/k select  space spend-slot/toggle-prepared  t cast\n/: add spell (SRD)",
+                        "j/k select  enter read  space spend-slot/toggle-prepared  t cast\n/: add spell (SRD)",
                     ),
             )
             .into_any_element()
@@ -2714,20 +2805,37 @@ impl SheetView {
     }
 
     fn inventory_section(&self, cx: &mut Context<Self>) -> AnyElement {
-        let rows: Vec<_> = self
-            .item_rows()
-            .into_iter()
-            .enumerate()
-            .map(|(i, (name, qty, equipped))| {
-                let mark = if equipped { "[e]" } else { "[ ]" };
-                let qty = if qty == 1 {
-                    String::new()
-                } else {
-                    format!(" x{qty}")
-                };
-                self.row(i, format!("{mark} {name}{qty}"), cx)
-            })
-            .collect();
+        let mut rows: Vec<_> = Vec::new();
+        for (i, (name, qty, equipped)) in self.item_rows().into_iter().enumerate() {
+            let mark = if equipped { "[e]" } else { "[ ]" };
+            let qty = if qty == 1 {
+                String::new()
+            } else {
+                format!(" x{qty}")
+            };
+            rows.push(self.row(i, format!("{mark} {name}{qty}"), cx));
+            if self.expanded == Some((Section::Inventory, i)) {
+                let desc = self
+                    .doc
+                    .character
+                    .inventory
+                    .0
+                    .get(&name)
+                    .map_or_else(String::new, |it| it.description.clone());
+                rows.push(
+                    div()
+                        .id(("item-desc", i))
+                        .max_h(gpui::px(200.))
+                        .overflow_y_scroll()
+                        .px_4()
+                        .py_1()
+                        .text_sm()
+                        .text_color(gpui::rgb(0xba_b2_c8))
+                        .child(desc)
+                        .into_any_element(),
+                );
+            }
+        }
         self.scrollable(div())
             .flex()
             .flex_col()
@@ -2746,7 +2854,7 @@ impl SheetView {
                     .text_sm()
                     .text_color(gpui::rgb(0x6c_70_86))
                     .child(
-                        "j/k select  space equip/unequip  +/- quantity\n(- to 0 removes the item)   /: SRD item picker",
+                        "j/k select  enter read  space equip/unequip  +/- quantity\n(- to 0 removes the item)   /: SRD item picker",
                     ),
             )
             .into_any_element()
@@ -2820,19 +2928,32 @@ impl SheetView {
 
     fn features_section(&self, cx: &mut Context<Self>) -> AnyElement {
         let grants = self.grant_rows().len();
-        let rows: Vec<_> = self
-            .grant_rows()
-            .into_iter()
-            .enumerate()
-            .map(|(i, (name, effects))| {
-                let text = if effects.is_empty() {
-                    name
-                } else {
-                    format!("{name} — {effects}")
-                };
-                self.row(i, text, cx)
-            })
-            .collect();
+        let mut rows: Vec<_> = Vec::new();
+        for (i, (name, effects)) in self.grant_rows().into_iter().enumerate() {
+            let mut text = if effects.is_empty() {
+                name.clone()
+            } else {
+                format!("{name} — {effects}")
+            };
+            if let Some(c) = self.charge_summary(&name) {
+                text.push_str(&format!("   [{c}]"));
+            }
+            rows.push(self.row(i, text, cx));
+            if self.expanded == Some((Section::Features, i)) {
+                rows.push(
+                    div()
+                        .id(("feat-desc", i))
+                        .max_h(gpui::px(200.))
+                        .overflow_y_scroll()
+                        .px_4()
+                        .py_1()
+                        .text_sm()
+                        .text_color(gpui::rgb(0xba_b2_c8))
+                        .child(self.grant_desc(&name))
+                        .into_any_element(),
+                );
+            }
+        }
         self.scrollable(div())
             .flex()
             .flex_col()
@@ -2848,7 +2969,7 @@ impl SheetView {
                     .text_sm()
                     .text_color(gpui::rgb(0x6c_70_86))
                     .child(
-                        "j/k select  space removes the grant (ctrl-z undoes)\nadd rows: space opens the SRD picker",
+                        "j/k select  enter read  u use charge  D delete (press twice)\nadd rows: enter opens the SRD picker",
                     ),
             )
             .into_any_element()
@@ -2860,7 +2981,15 @@ impl SheetView {
             s if s == grants => self.open_picker(PickKind::Feat, window, cx),
             s if s == grants + 1 => self.open_picker(PickKind::Feature, window, cx),
             s if s == grants + 2 => self.open_picker(PickKind::Trait, window, cx),
-            _ => self.remove_grant_row(cx),
+            _ => {
+                // Space activates: spend a charge if the grant has one.
+                if !self.use_selected_charge(cx) {
+                    self.report(
+                        "no charges here: enter reads, u spends a charge, D deletes (twice)",
+                        cx,
+                    );
+                }
+            }
         }
     }
 
@@ -2876,6 +3005,342 @@ impl SheetView {
             },
             cx,
         );
+    }
+
+    /// enter: expand the selected entry's full description (features,
+    /// spells, items), open the SRD picker on add rows, and open the
+    /// class-detail popup on the Basic tab.
+    fn on_expand_row(&mut self, _: &ExpandRow, window: &mut Window, cx: &mut Context<Self>) {
+        if self.picker.is_some()
+            || self.levelup.is_some()
+            || self.form.is_some()
+            || self.class_info.is_some()
+            || self.asi.is_some()
+        {
+            return;
+        }
+        match self.section {
+            Section::Basic => self.open_class_info(cx),
+            Section::Features => {
+                let grants = self.grant_rows().len();
+                match self.sel {
+                    s if s == grants => self.open_picker(PickKind::Feat, window, cx),
+                    s if s == grants + 1 => self.open_picker(PickKind::Feature, window, cx),
+                    s if s == grants + 2 => self.open_picker(PickKind::Trait, window, cx),
+                    _ => self.toggle_expanded(cx),
+                }
+            }
+            Section::Spells if self.sel >= self.slot_rows().len() => self.toggle_expanded(cx),
+            Section::Inventory if self.sel < self.item_rows().len() => self.toggle_expanded(cx),
+            _ => {}
+        }
+    }
+
+    fn toggle_expanded(&mut self, cx: &mut Context<Self>) {
+        self.expanded = match self.expanded {
+            Some((s, i)) if s == self.section && i == self.sel => None,
+            _ => Some((self.section, self.sel)),
+        };
+        cx.notify();
+    }
+
+    fn open_class_info(&mut self, cx: &mut Context<Self>) {
+        let Some(corpus) = self.corpus.clone() else {
+            self.report("SRD corpus not found — no class details", cx);
+            return;
+        };
+        let stack = self.doc.character.classes.classes.len();
+        let Some(cl) = self
+            .doc
+            .character
+            .classes
+            .classes
+            .get(self.class_sel)
+            .cloned()
+        else {
+            return;
+        };
+        self.class_info = Some(cx.new(|_cx| ClassInfoView::new(cl, self.class_sel, stack, corpus)));
+        cx.notify();
+    }
+
+    fn on_class_next(&mut self, _: &ClassNext, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(v) = self.class_info.as_ref() {
+            v.update(cx, |v, cx| {
+                v.move_sel(1);
+                v.scroll_handle().scroll_to_item(v.sel());
+                cx.notify();
+            });
+        }
+    }
+
+    fn on_class_prev(&mut self, _: &ClassPrev, _: &mut Window, cx: &mut Context<Self>) {
+        if let Some(v) = self.class_info.as_ref() {
+            v.update(cx, |v, cx| {
+                v.move_sel(-1);
+                v.scroll_handle().scroll_to_item(v.sel());
+                cx.notify();
+            });
+        }
+    }
+
+    fn on_close_class_info(&mut self, _: &CloseClassInfo, _: &mut Window, cx: &mut Context<Self>) {
+        self.class_info = None;
+        cx.notify();
+    }
+
+    /// Standalone ASI menu (budget points to spread, PHB caps): opened
+    /// from the feat picker's ASI row. The same budget readout shape the
+    /// wizard's point-buy should reuse later.
+    fn open_asi_menu(&mut self, budget: i64, window: &mut Window, cx: &mut Context<Self>) {
+        let scores = self.doc.character.ability_scores.clone();
+        let sheet = cx.entity().downgrade();
+        let view = cx.new(|cx| {
+            crate::asi_view::AsiView::new(
+                &scores,
+                budget,
+                move |outcome, window, cx| {
+                    sheet
+                        .update(cx, |v, cx| v.on_asi_done(outcome, window, cx))
+                        .ok();
+                },
+                cx,
+            )
+        });
+        self.asi = Some(view.clone());
+        let fh = view.read(cx).focus_handle.clone();
+        window.focus(&fh, cx);
+        self.report("ASI: j/k score, +/- bump, enter applies, esc cancels", cx);
+        cx.notify();
+    }
+
+    fn on_asi_done(&mut self, outcome: AsiOutcome, window: &mut Window, cx: &mut Context<Self>) {
+        self.asi = None;
+        window.focus(&self.focus_handle, cx);
+        match outcome {
+            AsiOutcome::Apply(deltas) => {
+                let res: Result<(), ()> = self.doc.try_edit(|c| {
+                    for (score, n) in &deltas {
+                        c.ability_scores.get_mut(score).base += n;
+                    }
+                    Ok(())
+                });
+                if res.is_ok() {
+                    let parts: Vec<String> =
+                        deltas.iter().map(|(s, n)| format!("{s:?} +{n}")).collect();
+                    self.report(format!("ASI applied: {}", parts.join(", ")), cx);
+                } else {
+                    self.report("ASI could not be applied", cx);
+                }
+            }
+            AsiOutcome::Cancelled => self.report("ASI cancelled", cx),
+        }
+        cx.notify();
+    }
+
+    /// Full SRD-ish text for a grant: stored Custom/Desc effects first,
+    /// then the corpus entry by name as a fallback.
+    fn grant_desc(&self, grant: &str) -> String {
+        let c = &self.doc.character;
+        let mut parts: Vec<String> = Vec::new();
+        for f in &c.features.inner {
+            if f.name == grant {
+                for e in &f.effects {
+                    if let Effect::Custom(d) = e {
+                        parts.push(d.clone());
+                    }
+                }
+            }
+        }
+        for f in c.feats.iter() {
+            if f.name == grant && !f.desc.is_empty() {
+                parts.push(f.desc.clone());
+            }
+        }
+        for t in c.traits.iter() {
+            if t.name == grant && !t.desc.is_empty() {
+                parts.push(t.desc.clone());
+            }
+        }
+        if parts.is_empty()
+            && let Some(corpus) = &self.corpus
+            && let Some(db) = corpus.features.iter().find(|db| db.name == grant)
+        {
+            parts.push(db.desc.join("\n"));
+        }
+        if parts.is_empty() {
+            return "(no stored description — the SRD entry has none either)".to_string();
+        }
+        parts.join("\n\n")
+    }
+
+    /// The meter carrying a grant's charges, if it has any: the meter
+    /// named after the grant itself, else one its effects reference.
+    fn charge_meter_name(&self, grant: &str) -> Option<String> {
+        let c = &self.doc.character;
+        if c.meters.meters.contains_key(grant) {
+            return Some(grant.to_string());
+        }
+        let effects: &[Effect] = c
+            .features
+            .inner
+            .iter()
+            .find(|f| f.name == grant)
+            .map(|f| &f.effects[..])
+            .or_else(|| {
+                c.feats
+                    .iter()
+                    .find(|f| f.name == grant)
+                    .and_then(|f| f.feature.as_ref())
+                    .map(|f| &f.effects[..])
+            })
+            .or_else(|| {
+                c.traits
+                    .iter()
+                    .find(|t| t.name == grant)
+                    .and_then(|t| t.feature.as_ref())
+                    .map(|t| &t.effects[..])
+            })
+            .unwrap_or(&[][..]);
+        effects.iter().find_map(|e| match e {
+            Effect::Meter(m) if c.meters.meters.contains_key(&m.name) => Some(m.name.clone()),
+            _ => None,
+        })
+    }
+
+    fn charge_summary(&self, grant: &str) -> Option<String> {
+        let mname = self.charge_meter_name(grant)?;
+        let m = self.doc.character.meters.meters.get(&mname)?;
+        Some(format!("{}/{}", m.slot_number - m.spent, m.slot_number))
+    }
+
+    /// `u`: spend one charge of the selected grant's meter.
+    fn on_use_charge(&mut self, _: &UseCharge, _: &mut Window, cx: &mut Context<Self>) {
+        if self.picker.is_some()
+            || self.levelup.is_some()
+            || self.form.is_some()
+            || self.class_info.is_some()
+            || self.asi.is_some()
+        {
+            return;
+        }
+        if self.section != Section::Features {
+            return;
+        }
+        self.use_selected_charge(cx);
+        cx.notify();
+    }
+
+    /// Spend one charge of the selected grant's meter; false when the
+    /// grant has no charges at all.
+    fn use_selected_charge(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some((name, _)) = self.grant_rows().get(self.sel).cloned() else {
+            return false;
+        };
+        let Some(mname) = self.charge_meter_name(&name) else {
+            self.report(format!("{name} has no charges to use"), cx);
+            return false;
+        };
+        let spent = self.doc.try_edit(|c| {
+            let m = c.meters.meters.get_mut(&mname).ok_or(())?;
+            if !m.check() {
+                return Err(());
+            }
+            m.spend();
+            Ok::<(), ()>(())
+        });
+        match spent {
+            Ok(()) => {
+                let m = &self.doc.character.meters.meters[&mname];
+                self.report(
+                    format!(
+                        "{name}: {}/{} charges left",
+                        m.slot_number - m.spent,
+                        m.slot_number
+                    ),
+                    cx,
+                );
+            }
+            Err(()) => {
+                self.report(
+                    format!("{name}: no charges left — a rest restores them"),
+                    cx,
+                );
+            }
+        }
+        true
+    }
+
+    /// `D`: delete a grant, but only after the same key re-arms on the
+    /// same row (user ruling 2026-11-24: removal must be hard to fat-finger).
+    fn on_delete_grant(&mut self, _: &DeleteGrant, _: &mut Window, cx: &mut Context<Self>) {
+        if self.picker.is_some()
+            || self.levelup.is_some()
+            || self.form.is_some()
+            || self.class_info.is_some()
+            || self.asi.is_some()
+        {
+            return;
+        }
+        if self.section != Section::Features {
+            return;
+        }
+        let grants = self.grant_rows().len();
+        if self.sel >= grants {
+            return;
+        }
+        if self.armed_delete == Some(self.sel) {
+            self.armed_delete = None;
+            self.remove_grant_row(cx);
+        } else {
+            let Some((name, _)) = self.grant_rows().get(self.sel).cloned() else {
+                return;
+            };
+            self.armed_delete = Some(self.sel);
+            self.report(format!("D again to delete {name}"), cx);
+        }
+        cx.notify();
+    }
+
+    /// `M`: drop the selected class from a multiclass (never the only one).
+    fn on_remove_class(&mut self, _: &RemoveClass, _: &mut Window, cx: &mut Context<Self>) {
+        if self.picker.is_some()
+            || self.levelup.is_some()
+            || self.form.is_some()
+            || self.class_info.is_some()
+            || self.asi.is_some()
+        {
+            return;
+        }
+        if self.section != Section::Basic {
+            return;
+        }
+        let n = self.doc.character.classes.classes.len();
+        if n < 2 {
+            self.report("can't remove the only class", cx);
+            return;
+        }
+        let i = self.class_sel.min(n - 1);
+        let removed = self
+            .doc
+            .try_edit(|c| Ok::<_, ()>(c.classes.classes.remove(i)));
+        match removed {
+            Ok(cl) => {
+                self.doc.character.sync_spell_slots();
+                self.class_sel = self
+                    .class_sel
+                    .min(self.doc.character.classes.classes.len() - 1);
+                self.report(
+                    format!(
+                        "{} removed — hit points kept as-is (ctrl-z to undo)",
+                        cl.class
+                    ),
+                    cx,
+                );
+            }
+            Err(()) => self.report("could not remove that class", cx),
+        }
+        cx.notify();
     }
 
     fn notes_section(&self, _cx: &mut Context<Self>) -> AnyElement {
@@ -2973,7 +3438,7 @@ impl SheetView {
                         div()
                             .text_xs()
                             .text_color(gpui::rgb(0x6c_70_86))
-                            .child("[ ] section   j/k select   space activate   s/S rest   + level up   - level down   m add class   / picker   n new   ctrl-,/. character"),
+                            .child("[ ] section   j/k select   enter read   e rename (Basic)   u use charge   s/S rest\n+ level up   - level down   m add class   M remove class   / picker   n new   ctrl-,/. character   ctrl-p pick character"),
                     ),
             )
             .child(
@@ -3186,6 +3651,10 @@ impl Render for SheetView {
                 crate::levelup_view::LEVELUP_CTX
             } else if form_open {
                 crate::form::FORM_CTX
+            } else if self.class_info.is_some() {
+                CLASS_CTX
+            } else if self.asi.is_some() {
+                ASI_CTX
             } else if field_active {
                 crate::dungeon_view::FIELD_CTX
             } else {
@@ -3222,6 +3691,13 @@ impl Render for SheetView {
             .on_action(cx.listener(Self::on_tray_damage))
             .on_action(cx.listener(Self::on_open_picker))
             .on_action(cx.listener(Self::on_new_custom))
+            .on_action(cx.listener(Self::on_expand_row))
+            .on_action(cx.listener(Self::on_use_charge))
+            .on_action(cx.listener(Self::on_delete_grant))
+            .on_action(cx.listener(Self::on_remove_class))
+            .on_action(cx.listener(Self::on_class_next))
+            .on_action(cx.listener(Self::on_class_prev))
+            .on_action(cx.listener(Self::on_close_class_info))
             .child(self.nav(cx))
             .child(
                 div()
@@ -3315,6 +3791,34 @@ impl Render for SheetView {
                         .child(l),
                 )
             })
+            // The class-detail popup rides the same scrim treatment.
+            .when_some(self.class_info.clone(), |d, v| {
+                d.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .bg(gpui::hsla(0., 0., 0., 0.45))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .pt(gpui::px(56.))
+                        .child(v),
+                )
+            })
+            // ...and so does the ASI menu.
+            .when_some(self.asi.clone(), |d, v| {
+                d.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .bg(gpui::hsla(0., 0., 0., 0.45))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .pt(gpui::px(56.))
+                        .child(v),
+                )
+            })
             // The custom-entry form rides the same scrim treatment.
             .when_some(self.form.clone(), |d, f| {
                 d.child(
@@ -3357,7 +3861,11 @@ fn form_specs(kind: PickKind) -> Vec<(&'static str, String)> {
         PickKind::Feat => spec(&[("name", ""), ("description", "")]),
         PickKind::Feature => spec(&[("name", ""), ("description", "")]),
         PickKind::Trait => spec(&[("name", ""), ("description", "")]),
-        PickKind::Race | PickKind::Class | PickKind::Background | PickKind::Subrace => Vec::new(),
+        PickKind::Race
+        | PickKind::Class
+        | PickKind::Background
+        | PickKind::Subrace
+        | PickKind::Character => Vec::new(),
     }
 }
 
@@ -3412,6 +3920,8 @@ mod tests {
             cx.bind_keys(crate::picker::picker_keys());
             cx.bind_keys(crate::form::form_keys());
             cx.bind_keys(crate::levelup_view::levelup_keys());
+            cx.bind_keys(crate::class_view::class_keys());
+            cx.bind_keys(crate::asi_view::asi_keys());
             Autosave::init(cx);
         });
         let window = match window_size {
@@ -3593,6 +4103,88 @@ mod tests {
                 "no ASI bumps with feat chosen"
             );
             assert!(v.picker.is_some(), "the feat picker chained open");
+            assert_eq!(
+                v.picker.as_ref().unwrap().read(cx).row_indexes()[0],
+                "asi",
+                "the chained picker leads with the ASI row so the swap \
+                 is reversible"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn asi_menu_offers_two_points_capped_per_stat_and_applies(cx: &mut TestAppContext) {
+        let (window, root) = open_sheet_with(cx, Some(test_corpus()));
+        let view = sheet(cx, &root);
+        // Walk to L4 and skip the ASI step entirely: the picker chains
+        // open with the ASI row so the points are never silently lost.
+        cx.simulate_keystrokes(window.into(), "= enter enter");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "= enter enter enter");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "= enter enter enter");
+        cx.run_until_parked();
+        cx.read(|cx| {
+            let v = view.read(cx);
+            assert_eq!(v.doc.character.classes[0].get_level(), 4);
+            assert_eq!(
+                v.picker.as_ref().unwrap().read(cx).row_indexes()[0],
+                "asi",
+                "a skipped ASI re-offers itself through the picker"
+            );
+        });
+        // Pick the ASI row: the standalone menu opens.
+        cx.simulate_keystrokes(window.into(), "enter");
+        cx.run_until_parked();
+        assert!(cx.read(|cx| view.read(cx).asi.is_some()));
+        // Three bumps on STR: the third is refused (max +2 per stat).
+        cx.simulate_keystrokes(window.into(), "+ + +");
+        cx.run_until_parked();
+        cx.read(|cx| {
+            let asi = view.read(cx).asi.as_ref().unwrap().read(cx);
+            assert_eq!(asi.deltas(), vec![(Score::Str, 2)], "PHB +2 cap");
+        });
+        // Splitting past the budget is refused too.
+        cx.simulate_keystrokes(window.into(), "j +");
+        cx.run_until_parked();
+        cx.read(|cx| {
+            let asi = view.read(cx).asi.as_ref().unwrap().read(cx);
+            assert_eq!(asi.deltas(), vec![(Score::Str, 2)], "budget of 2 total");
+        });
+        // Reset, split 1/1, apply.
+        cx.simulate_keystrokes(window.into(), "r + j + enter");
+        cx.run_until_parked();
+        cx.read(|cx| {
+            let v = view.read(cx);
+            assert!(v.asi.is_none(), "the menu closed on confirm");
+            let c = &v.doc.character;
+            assert_eq!(c.ability_scores.str.base, 11);
+            assert_eq!(c.ability_scores.dex.base, 11);
+        });
+    }
+
+    #[gpui::test]
+    fn asi_menu_escape_cancels(cx: &mut TestAppContext) {
+        let (window, root) = open_sheet_with(cx, Some(test_corpus()));
+        let view = sheet(cx, &root);
+        cx.simulate_keystrokes(window.into(), "= enter enter");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "= enter enter enter");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "= enter enter enter");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "enter"); // pick the ASI row
+        cx.run_until_parked();
+        assert!(cx.read(|cx| view.read(cx).asi.is_some()));
+        cx.simulate_keystrokes(window.into(), "escape");
+        cx.run_until_parked();
+        cx.read(|cx| {
+            let v = view.read(cx);
+            assert!(v.asi.is_none(), "esc closes the ASI menu");
+            assert_eq!(
+                v.doc.character.ability_scores.str.base, 10,
+                "cancelling changes nothing"
+            );
         });
     }
 
@@ -3669,14 +4261,14 @@ mod tests {
     }
 
     #[gpui::test]
-    fn enter_rename_type_enter_commits(cx: &mut TestAppContext) {
+    fn e_rename_type_enter_commits(cx: &mut TestAppContext) {
         let (window, root) = open_sheet(cx);
         let view = sheet(cx, &root);
-        cx.simulate_keystrokes(window.into(), "enter");
+        cx.simulate_keystrokes(window.into(), "e");
         cx.run_until_parked();
         assert!(
             cx.read(|cx| view.read(cx).field.is_some()),
-            "field opens on enter"
+            "field opens on e (rename moved off enter)"
         );
         cx.simulate_input(window.into(), "Minsc");
         cx.run_until_parked();
@@ -3685,6 +4277,24 @@ mod tests {
         assert_eq!(
             cx.read(|cx| view.read(cx).doc().character.name.clone()),
             "Minsc"
+        );
+    }
+
+    #[gpui::test]
+    fn enter_on_basic_opens_the_class_info_popup(cx: &mut TestAppContext) {
+        let (window, root) = open_sheet_with(cx, Some(test_corpus()));
+        let view = sheet(cx, &root);
+        cx.simulate_keystrokes(window.into(), "enter");
+        cx.run_until_parked();
+        assert!(
+            cx.read(|cx| view.read(cx).class_info.is_some()),
+            "enter on the Basic tab opens the class popup, not rename"
+        );
+        cx.simulate_keystrokes(window.into(), "escape");
+        cx.run_until_parked();
+        assert!(
+            cx.read(|cx| view.read(cx).class_info.is_none()),
+            "esc closes the class popup"
         );
     }
 

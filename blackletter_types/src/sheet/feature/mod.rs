@@ -30,6 +30,34 @@ pub struct Feature {
     pub effects: Vec<Effect>,
 }
 
+/// SRD features named "X (N uses)" are limited-use resources (Action
+/// Surge, Indomitable). Parse the use count from the name and the
+/// recovery from the description: "short or long rest" restores on a
+/// short rest, otherwise long rest only. Returns `None` for features
+/// without a charge phrasing.
+pub fn charge_meter(name: &str, desc: &str) -> Option<crate::sheet::meter::Meter> {
+    use crate::sheet::meter::{Meter, RestoreTime};
+    if !name.ends_with(')') {
+        return None;
+    }
+    let open = name.rfind(" (")?;
+    let tail = &name[open + 2..name.len() - 1];
+    let (num, word) = tail.split_once(' ')?;
+    if word != "use" && word != "uses" {
+        return None;
+    }
+    let count: u32 = num.parse().ok()?;
+    let short = desc.to_lowercase().contains("short or long rest");
+    Some(Meter::new(
+        name.to_string(),
+        count,
+        RestoreTime {
+            short_rest: short,
+            long_rest: true,
+        },
+    ))
+}
+
 impl HasSource for Feature {
     fn source(&self) -> Option<&Source> {
         self.source.as_ref()
@@ -167,5 +195,24 @@ mod tests {
             Effect::Custom("Your soul glows on Tuesdays".to_string()).to_string(),
             "Your soul glows on Tuesdays"
         );
+    }
+
+    #[test]
+    fn charge_meter_parses_srd_use_phrasings() {
+        let m = charge_meter(
+            "Action Surge (1 use)",
+            "...until the end of a short or long rest.",
+        )
+        .expect("action surge has charges");
+        assert_eq!(m.name, "Action Surge (1 use)");
+        assert_eq!(m.slot_number, 1);
+        assert!(m.restore.short_rest && m.restore.long_rest);
+        let m = charge_meter("Indomitable (2 uses)", "...finish a long rest.")
+            .expect("indomitable has charges");
+        assert_eq!(m.slot_number, 2);
+        assert!(!m.restore.short_rest && m.restore.long_rest);
+        assert!(charge_meter("Second Wind", "You take a short or long rest.").is_none());
+        assert!(charge_meter("Fighting Style", "no charges here").is_none());
+        assert!(charge_meter("Weird (3 apples)", "no").is_none());
     }
 }

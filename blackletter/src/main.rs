@@ -1,7 +1,9 @@
 //! Blackletter: D&D 5e character sheets + dungeon tracking, one GPUI app.
 
+mod asi_view;
 mod autosave;
 mod campaign;
+mod class_view;
 mod dungeon_view;
 mod field;
 mod files;
@@ -34,6 +36,8 @@ fn main() {
         cx.bind_keys(form::form_keys());
         cx.bind_keys(wizard::wizard_keys());
         cx.bind_keys(levelup_view::levelup_keys());
+        cx.bind_keys(class_view::class_keys());
+        cx.bind_keys(asi_view::asi_keys());
         autosave::Autosave::init(cx);
         // The SRD corpus loads once at startup (vendored `srd/`, see Task
         // 4.1); a missing corpus only disables the pickers, never the app.

@@ -60,6 +60,10 @@ pub enum LevelUpOutcome {
         asi: Vec<(Score, i64)>,
         subclass: Option<(String, String)>,
         feat_instead_of_asi: bool,
+        /// True when this level granted an ASI that the user neither
+        /// spent nor swapped for a feat — the sheet re-offers it via the
+        /// feat picker's ASI row so it can't be silently lost.
+        asi_offered: bool,
     },
     Cancelled,
 }
@@ -224,9 +228,10 @@ impl LevelUpView {
         cb(
             LevelUpOutcome::Apply {
                 hp_gain: self.hp_gain(),
-                asi,
+                asi: asi.clone(),
                 subclass,
                 feat_instead_of_asi: self.feat_instead,
+                asi_offered: self.plan.asi_points > 0 && !self.feat_instead && asi.is_empty(),
             },
             window,
             cx,
@@ -290,7 +295,10 @@ impl Render for LevelUpView {
             Step::Hp => {
                 let roll_line = match self.rolled {
                     Some((die, total)) => {
-                        format!("rolled d{}: {die} -> +{total}", self.plan.hit_die_max)
+                        format!(
+                            "rolled d{}: {die} -> +{total} (f reverts to fixed)",
+                            self.plan.hit_die_max
+                        )
                     }
                     None => format!("r rolls the d{} + CON", self.plan.hit_die_max),
                 };
@@ -344,22 +352,26 @@ impl Render for LevelUpView {
                     .iter()
                     .enumerate()
                     .map(|(i, label)| {
-                        let text = format!(
-                            "{label} {}{}",
-                            self.bases[i],
-                            if self.alloc[i] > 0 {
-                                format!(" (+{})", self.alloc[i])
-                            } else {
-                                String::new()
-                            }
-                        );
+                        let bumped = self.alloc[i] > 0;
+                        let text = format!("{label} {}", self.bases[i]);
                         div()
                             .id(("asi-row", i))
                             .px_2()
                             .rounded_sm()
+                            .flex()
+                            .gap_1()
                             .when(i == self.asi_sel, |d| d.bg(gpui::rgb(0x35_35_48)))
                             .when(i != self.asi_sel, |d| d.text_color(gpui::rgb(0x8a_90_b0)))
                             .child(text)
+                            // Changed scores read in the highlight color,
+                            // matching the standalone ASI menu.
+                            .when(bumped, |d| {
+                                d.child(
+                                    div()
+                                        .text_color(gpui::rgb(0x8f_c8_6a))
+                                        .child(format!("(+{})", self.alloc[i])),
+                                )
+                            })
                     })
                     .collect();
                 let left = i64::from(self.plan.asi_points) - self.asi_spent();
@@ -449,7 +461,16 @@ impl Render for LevelUpView {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &LevelUpFeatToggle, _window, cx| {
-                this.toggle_feat();
+                // `f` is step-aware: on the HP step it means "fixed"
+                // (undo a misclicked roll); only the ASI step treats it
+                // as the feat-swap toggle. Without this, pressing f at
+                // the HP step silently armed a feat and opened the feat
+                // picker after confirm — even at levels with no ASI.
+                match this.steps[this.step] {
+                    Step::Hp => this.use_roll = false,
+                    Step::Asi => this.toggle_feat(),
+                    _ => {}
+                }
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &LevelUpBump, _window, cx| {

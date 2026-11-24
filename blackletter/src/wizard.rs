@@ -864,10 +864,14 @@ pub fn build_character(corpus: &Corpus, draft: &Draft) -> anyhow::Result<Charact
 
     // Level-1 class features (prose; mechanics ride in with later phases).
     for f in corpus.level_features(ci, 1) {
+        let effects = blackletter_types::sheet::feature::charge_meter(&f.name, &f.desc.join("\n"))
+            .map_or_else(Vec::new, |m| {
+                vec![blackletter_types::feature::Effect::Meter(m)]
+            });
         let feat = blackletter_types::feature::Feature {
             name: f.name.clone(),
             source: Some(Source::Single("SRD (2014)".into())),
-            effects: Vec::new(),
+            effects,
         };
         if !c.has_grant(&feat.name) {
             c.add_feature(feat);

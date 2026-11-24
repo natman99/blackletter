@@ -47,6 +47,8 @@ pub enum PickKind {
     Class,
     Background,
     Subrace,
+    /// Owner-supplied rows (campaign characters): see `with_rows`.
+    Character,
 }
 
 impl PickKind {
@@ -61,6 +63,7 @@ impl PickKind {
             PickKind::Class => "class",
             PickKind::Background => "background",
             PickKind::Subrace => "subrace",
+            PickKind::Character => "character",
         }
     }
 }
@@ -129,9 +132,64 @@ impl Picker {
         me
     }
 
+    /// A picker over owner-supplied rows (campaign characters):
+    /// (index, label, detail) triples, filtered like corpus rows.
+    pub fn with_rows(
+        kind: PickKind,
+        all: Vec<(String, String, String)>,
+        on_choice: impl FnMut(PickerOutcome, &mut Window, &mut App) + Send + 'static,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let all: Vec<PickRow> = all
+            .into_iter()
+            .map(|(index, label, detail)| {
+                let hay = format!("{label} {index}").to_lowercase().replace('-', " ");
+                PickRow {
+                    index,
+                    label,
+                    detail,
+                    hay,
+                }
+            })
+            .collect();
+        let rows = all.clone();
+        let mut field = Field::new("");
+        field.caret_to_end();
+        let mut me = Self {
+            kind,
+            corpus: Arc::new(Corpus::default()),
+            all,
+            rows,
+            sel: 0,
+            scroll: 0,
+            field,
+            focus_handle: cx.focus_handle(),
+            on_choice: Some(Box::new(on_choice)),
+        };
+        me.refilter();
+        me
+    }
+
     #[cfg(test)]
     pub fn row_indexes(&self) -> Vec<String> {
         self.rows.iter().map(|r| r.index.clone()).collect()
+    }
+
+    /// A synthetic leading row for ASI contexts: a feat picker chained
+    /// from an ASI level-up also offers the ASI itself, so changing one's
+    /// mind doesn't require cancelling and re-levelling. Picking it
+    /// reports index "asi" to the owner.
+    pub fn add_asi_row(&mut self) {
+        self.all.insert(
+            0,
+            PickRow {
+                index: "asi".into(),
+                label: "Ability Score Improvement".into(),
+                detail: "+2 total across ability scores".into(),
+                hay: "ability score improvement asi stat increase".into(),
+            },
+        );
+        self.refilter();
     }
 
     /// Re-run the filter over `all`. Tokens must all appear in the row's
@@ -227,6 +285,7 @@ fn srd_rows(corpus: &Corpus, kind: PickKind) -> Vec<PickRow> {
     };
     let join = |v: &[String]| v.join("\n\n");
     match kind {
+        PickKind::Character => Vec::new(),
         PickKind::Spell => corpus
             .spells
             .iter()
@@ -435,6 +494,7 @@ fn custom_rows(lib: &Library, kind: PickKind) -> Vec<PickRow> {
         detail,
     };
     match kind {
+        PickKind::Character => Vec::new(),
         PickKind::Spell => lib
             .spells
             .values()
