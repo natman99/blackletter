@@ -48,6 +48,7 @@ actions!(
         SelectClassDown,
         LevelUp,
         LevelDown,
+        AddClass,
         ToggleRow,
         QuickDamage,
         CycleDamageType,
@@ -82,6 +83,7 @@ pub fn keybindings() -> Vec<KeyBinding> {
         "plus" => LevelUp,
         "equal" => LevelUp,
         "minus" => LevelDown,
+        "m" => AddClass,
         "enter" => EditName,
         "space" => ToggleRow,
         "d" => QuickDamage,
@@ -661,6 +663,151 @@ impl SheetView {
         cx.notify();
         if res.is_ok() && feat_instead_of_asi {
             self.open_picker(crate::picker::PickKind::Feat, window, cx);
+        }
+    }
+
+    /// Multiclass: add a second class at level 1 (plan Task 5.2). The
+    /// class picker's answer is gated by the SRD multiclass prerequisite
+    /// table at pick time; PHB grants only the reduced proficiency set
+    /// and the class's level-1 features (no skills, no equipment).
+    fn on_add_class(&mut self, _: &AddClass, window: &mut Window, cx: &mut Context<Self>) {
+        if self.levelup.is_some() || self.picker.is_some() || self.form.is_some() {
+            return;
+        }
+        let Some(corpus) = self.corpus.clone() else {
+            self.report("SRD corpus not found — pickers disabled", cx);
+            return;
+        };
+        let lib = self.library.read(cx).clone();
+        let sheet = cx.entity().downgrade();
+        let picker = cx.new(|cx| {
+            Picker::new(
+                crate::picker::PickKind::Class,
+                corpus,
+                Some(&lib),
+                move |outcome, window, cx| {
+                    sheet
+                        .update(cx, |v, cx| v.on_add_class_pick(outcome, window, cx))
+                        .ok();
+                },
+                cx,
+            )
+        });
+        self.picker = Some(picker.clone());
+        window.focus(&picker.read(cx).focus_handle(cx), cx);
+        self.report(
+            "add class: type to filter, enter picks (prerequisites checked)",
+            cx,
+        );
+        cx.notify();
+    }
+
+    fn on_add_class_pick(
+        &mut self,
+        outcome: crate::picker::PickerOutcome,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Focus back BEFORE releasing the picker entity (gpui drop rule).
+        window.focus(&self.focus_handle, cx);
+        self.picker = None;
+        let crate::picker::PickerOutcome::Chosen(index) = outcome else {
+            self.report("add class cancelled", cx);
+            cx.notify();
+            return;
+        };
+        self.add_multiclass(&index, cx);
+        cx.notify();
+    }
+
+    fn add_multiclass(&mut self, class_index: &str, cx: &mut Context<Self>) {
+        let Some(corpus) = self.corpus.clone() else {
+            return;
+        };
+        let Some(db) = corpus.class(class_index) else {
+            self.report("corpus class vanished", cx);
+            return;
+        };
+        if !blackletter_types::sheet::levelup::meets_multiclass_prerequisites(
+            &self.doc.character.ability_scores,
+            class_index,
+            db.multi_classing.as_ref(),
+        ) {
+            let need: Vec<String> = db
+                .multi_classing
+                .as_ref()
+                .map(|mc| {
+                    mc.prerequisites
+                        .iter()
+                        .map(|p| format!("{} {}", p.ability_score.index, p.minimum_score))
+                        .collect()
+                })
+                .unwrap_or_default();
+            self.report(
+                format!(
+                    "{class_index} needs {} — multiclass prerequisite not met",
+                    if need.is_empty() {
+                        "the class rule".to_string()
+                    } else {
+                        need.join(" and ")
+                    }
+                ),
+                cx,
+            );
+            return;
+        }
+        let res = self.doc.try_edit(|c| {
+            let fresh = blackletter_types::sheet::class::Class::try_from_database(db);
+            if c.classes.classes.iter().any(|cl| cl.class == fresh.class) {
+                anyhow::bail!("{class_index} is already in the class stack");
+            }
+            // Level-1 HP rule for the new class: full die + CON mod.
+            let hp = i64::from(fresh.hit_dice.max()) + c.ability_scores.con.modifier();
+            c.classes.classes.push(fresh);
+            c.health.max += hp;
+            c.health.current += hp;
+            // REDUCED multiclass proficiencies only (Wiki/03:87); PHB
+            // grants no skill proficiencies or equipment to a new class.
+            if let Some(mc) = &db.multi_classing {
+                c.gain_multiclass_proficiencies(mc);
+            }
+            for f in corpus.level_features(class_index, 1) {
+                if !c.has_grant(&f.name) {
+                    c.add_feature(blackletter_types::feature::Feature {
+                        name: f.name.clone(),
+                        source: Some(blackletter_types::sheet::source::Source::Single(
+                            "SRD (2014)".into(),
+                        )),
+                        effects: Vec::new(),
+                    });
+                }
+            }
+            c.sync_proficiency_bonus();
+            c.sync_spell_slots();
+            Ok(())
+        });
+        match &res {
+            Ok(()) => {
+                let c = &self.doc.character;
+                let pos = c.classes.classes.len() - 1;
+                let cl = &c.classes.classes[pos];
+                self.class_sel = pos;
+                let mut note = format!(
+                    "{} {} added (total {}, PB {})",
+                    cl.class,
+                    cl.get_level(),
+                    c.classes.total_level(),
+                    c.skills.proficiency_bonus
+                );
+                if corpus
+                    .class(class_index)
+                    .is_some_and(|d| d.spellcasting.is_some())
+                {
+                    note.push_str(" — spell slots resynced");
+                }
+                self.report(note, cx);
+            }
+            Err(e) => self.report(e.to_string(), cx),
         }
     }
 
@@ -2940,6 +3087,7 @@ impl Render for SheetView {
             .on_action(cx.listener(Self::on_select_class_down))
             .on_action(cx.listener(Self::on_level_up))
             .on_action(cx.listener(Self::on_level_down))
+            .on_action(cx.listener(Self::on_add_class))
             .on_action(cx.listener(Self::on_edit_name))
             .on_action(cx.listener(Self::on_field_submit))
             .on_action(cx.listener(Self::on_field_cancel))
@@ -3329,6 +3477,78 @@ mod tests {
                 "no ASI bumps with feat chosen"
             );
             assert!(v.picker.is_some(), "the feat picker chained open");
+        });
+    }
+
+    #[gpui::test]
+    fn add_class_is_gated_by_multiclass_prerequisites(cx: &mut TestAppContext) {
+        let (window, root) = open_sheet_with(cx, Some(test_corpus()));
+        let view = sheet(cx, &root);
+        // All-10 default sheet: wizard needs INT 13 — the pick is refused.
+        cx.simulate_keystrokes(window.into(), "m");
+        cx.run_until_parked();
+        assert!(
+            cx.read(|cx| view.read(cx).picker.is_some()),
+            "m opens the class picker"
+        );
+        cx.simulate_input(window.into(), "wizard");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "enter");
+        cx.run_until_parked();
+        cx.read(|cx| {
+            let v = view.read(cx);
+            assert_eq!(v.doc.character.classes.classes.len(), 1);
+            assert!(v.picker.is_none(), "picker closed after the refusal");
+        });
+    }
+
+    #[gpui::test]
+    fn add_class_grants_the_reduced_multiclass_package(cx: &mut TestAppContext) {
+        use blackletter_types::sheet::class::ClassType;
+        let (window, root) = open_sheet_with(cx, Some(test_corpus()));
+        let view = sheet(cx, &root);
+        // Meet the wizard's INT 13 multiclass prerequisite.
+        view.update(cx, |v, _| v.doc.character.ability_scores.int.base = 13);
+        let profs0 = cx.read(|cx| view.read(cx).doc().character.proficiencies.specific.len());
+        let hp0 = cx.read(|cx| view.read(cx).doc().character.health.max);
+        cx.simulate_keystrokes(window.into(), "m");
+        cx.run_until_parked();
+        cx.simulate_input(window.into(), "wizard");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "enter");
+        cx.run_until_parked();
+        cx.read(|cx| {
+            let v = view.read(cx);
+            let c = &v.doc.character;
+            assert_eq!(c.classes.classes.len(), 2);
+            assert_eq!(c.classes.classes[1].class, ClassType::Wizard);
+            assert_eq!(c.classes.classes[1].get_level(), 1);
+            assert_eq!(c.classes.total_level(), 2);
+            // Level-1 HP rule: full d6 + CON mod 0.
+            assert_eq!(c.health.max, hp0 + 6);
+            // PHB: a new class grants no skill proficiencies; the
+            // wizard's multiclass proficiency set is empty anyway.
+            assert_eq!(c.proficiencies.specific.len(), profs0);
+            // SRD wizard level 1 feature lands.
+            assert!(
+                c.features
+                    .inner
+                    .iter()
+                    .any(|f| f.name == "Spellcasting: Wizard")
+                    && c.features.inner.iter().any(|f| f.name == "Arcane Recovery"),
+                "SRD wizard level-1 features land"
+            );
+            // Multiclass caster level 1 -> two 1st-level slots.
+            let slot = &c.meters.meters["spell_slot_1"];
+            assert_eq!(slot.slot_number, 2);
+        });
+        // One ctrl-z reverts the whole multiclass.
+        cx.simulate_keystrokes(window.into(), "ctrl-z");
+        cx.run_until_parked();
+        cx.read(|cx| {
+            let c = &view.read(cx).doc().character;
+            assert_eq!(c.classes.classes.len(), 1);
+            assert_eq!(c.health.max, hp0);
         });
     }
 
