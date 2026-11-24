@@ -38,8 +38,8 @@ pub fn keybindings() -> Vec<KeyBinding> {
         KeyBinding::new("ctrl-n", NewCampaign, None),
         KeyBinding::new("ctrl-shift-n", NewCharacter, None),
         KeyBinding::new("ctrl-o", OpenCampaign, None),
-        KeyBinding::new("ctrl-comma", PrevDungeon, None),
-        KeyBinding::new("ctrl-period", NextDungeon, None),
+        KeyBinding::new("ctrl-,", PrevDungeon, None),
+        KeyBinding::new("ctrl-.", NextDungeon, None),
     ]
 }
 

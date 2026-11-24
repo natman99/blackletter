@@ -45,10 +45,10 @@ pub fn levelup_keys() -> Vec<KeyBinding> {
         KeyBinding::new("down", LevelUpDown, ctx),
         KeyBinding::new("r", LevelUpRoll, ctx),
         KeyBinding::new("f", LevelUpFeatToggle, ctx),
-        KeyBinding::new("plus", LevelUpBump, ctx),
-        KeyBinding::new("equal", LevelUpBump, ctx),
-        KeyBinding::new("minus", LevelUpUnbump, ctx),
-        KeyBinding::new("underscore", LevelUpUnbump, ctx),
+        KeyBinding::new("+", LevelUpBump, ctx),
+        KeyBinding::new("=", LevelUpBump, ctx),
+        KeyBinding::new("-", LevelUpUnbump, ctx),
+        KeyBinding::new("_", LevelUpUnbump, ctx),
         KeyBinding::new("escape", LevelUpCancel, ctx),
     ]
 }

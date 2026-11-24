@@ -51,6 +51,8 @@ actions!(
         AddClass,
         ToggleRow,
         QuickDamage,
+        QuickHeal,
+        RestoreSlot,
         CycleDamageType,
         RollDeathSave,
         ShortRest,
@@ -80,13 +82,21 @@ pub fn keybindings() -> Vec<KeyBinding> {
         "[" => PrevSection,
         "j" => SelectClassDown,
         "k" => SelectClassUp,
-        "plus" => LevelUp,
-        "equal" => LevelUp,
-        "minus" => LevelDown,
+        // NB: symbol keys are bound by the CHARACTER gpui's Wayland layer
+        // produces ("=", "+", "-", not =/+/"minus") — a named
+        // keysym never matches live keystrokes (found live 2026-11-24).
+        // "add"/"subtract" are the numpad keys (KP_Add -> "add").
+        "+" => LevelUp,
+        "=" => LevelUp,
+        "add" => LevelUp,
+        "-" => LevelDown,
+        "subtract" => LevelDown,
         "m" => AddClass,
         "enter" => EditName,
         "space" => ToggleRow,
         "d" => QuickDamage,
+        "f" => QuickHeal,
+        "z" => RestoreSlot,
         "t" => CycleDamageType,
         "r" => RollDeathSave,
         "s" => ShortRest,
@@ -247,6 +257,9 @@ pub struct SheetView {
     form: Option<Entity<crate::form::Form>>,
     /// Dice-tray result log, newest first (max 5).
     roll_log: Vec<String>,
+    log_scroll: gpui::ScrollHandle,
+    /// Meter name of the slot spent by the most recent cast (for `z`).
+    last_cast_slot: Option<String>,
     blank: Field,
     /// Scroll viewport for the center column's section (user ruling
     /// 2026-11-24: every section tab must scroll at short window heights).
@@ -278,6 +291,8 @@ impl SheetView {
             levelup: None,
             form: None,
             roll_log: Vec::new(),
+            log_scroll: gpui::ScrollHandle::new(),
+            last_cast_slot: None,
             blank: Field::new(""),
             scroll: gpui::ScrollHandle::new(),
         }
@@ -422,8 +437,12 @@ impl SheetView {
     }
 
     fn log_roll(&mut self, line: String, cx: &mut Context<Self>) {
-        self.roll_log.insert(0, line.clone());
-        self.roll_log.truncate(5);
+        // Chronological order; the bottom log auto-scrolls to the newest.
+        self.roll_log.push(line.clone());
+        if self.roll_log.len() > 50 {
+            self.roll_log.remove(0);
+        }
+        self.log_scroll.scroll_to_bottom();
         self.report(line, cx);
     }
 
@@ -884,6 +903,52 @@ impl SheetView {
             ),
             cx,
         );
+        cx.notify();
+    }
+
+    /// Heal is the mirror of QuickDamage (`f`, plan ask 2026-11-24): the
+    /// Combat section's space-on-HP heal existed but was undiscoverable.
+    fn on_quick_heal(&mut self, _: &QuickHeal, _: &mut Window, cx: &mut Context<Self>) {
+        self.field = Some((FieldTarget::Amount(false), Field::new("")));
+        self.report("heal amount — enter applies", cx);
+        cx.notify();
+    }
+
+    /// Restore the spell slot spent by the most recent cast (plan ask
+    /// 2026-11-24: accidents happen, ctrl-z is too blunt an undo).
+    fn on_restore_slot(&mut self, _: &RestoreSlot, _: &mut Window, cx: &mut Context<Self>) {
+        let Some(name) = self.last_cast_slot.clone() else {
+            self.report("no cast to undo — space on a slot row also restores it", cx);
+            cx.notify();
+            return;
+        };
+        let res = self.doc.try_edit(|c| {
+            let m = c
+                .meters
+                .meters
+                .get_mut(&name)
+                .ok_or_else(|| anyhow::anyhow!("slot meter vanished"))?;
+            if m.spent == 0 {
+                anyhow::bail!("{name} has no spent slot to restore");
+            }
+            m.restore();
+            Ok(())
+        });
+        match &res {
+            Ok(()) => {
+                self.last_cast_slot = None;
+                let m = &self.doc.character.meters.meters[&name];
+                self.report(
+                    format!(
+                        "{name} restored ({}/{} left)",
+                        m.slot_number - m.spent,
+                        m.slot_number
+                    ),
+                    cx,
+                );
+            }
+            Err(e) => self.report(e.to_string(), cx),
+        }
         cx.notify();
     }
 
@@ -2323,6 +2388,22 @@ impl SheetView {
             let s = &self.doc.character.spells.spells[&name];
             (s.concentration, self.doc.character.save_dc())
         };
+        // Which meter the cast WILL drain (spend_spell_slot prefers spell
+        // before pact) — recorded on success so `z` restores the right one.
+        let spell_name = format!("spell_slot_{level}");
+        let drained = if level > 0
+            && self
+                .doc
+                .character
+                .meters
+                .meters
+                .get(&spell_name)
+                .is_some_and(|m| m.check())
+        {
+            spell_name
+        } else {
+            format!("pact_slot_{level}")
+        };
         let cast = self.doc.try_edit(|c| {
             if level > 0 && !c.spend_spell_slot(level) {
                 return Err(());
@@ -2332,6 +2413,9 @@ impl SheetView {
             }
             Ok(())
         });
+        if cast.is_ok() && level > 0 {
+            self.last_cast_slot = Some(drained);
+        }
         if cast.is_ok() {
             self.report(
                 format!(
@@ -2849,7 +2933,10 @@ impl SheetView {
             .into_any_element()
     }
 
-    /// Bottom dice-tray strip: recent roll results + key hints.
+    /// Bottom bar: hotkey legend on the left ~3/4, a fixed-height
+    /// auto-scrolling roll log on the right ~1/4 (plan ask 2026-11-24).
+    /// The log is a plain div — no focus handle, so a stray click can
+    /// never park the keyboard somewhere it can't get back from.
     fn tray(&self, cx: &mut Context<Self>) -> AnyElement {
         let _ = cx;
         let lines: Vec<_> = self
@@ -2868,14 +2955,39 @@ impl SheetView {
             .px_2()
             .py_1()
             .flex()
-            .flex_col()
+            .flex_row()
+            .gap_2()
             .child(
                 div()
-                    .text_xs()
-                    .text_color(gpui::rgb(0x6c_70_86))
-                    .child("a attack   v save   c check   x damage   (d = apply damage to HP)"),
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(gpui::rgb(0x6c_70_86))
+                            .child("a attack   v save   c check   x roll damage   d apply damage   f heal   z restore slot"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(gpui::rgb(0x6c_70_86))
+                            .child("[ ] section   j/k select   space activate   s/S rest   + level up   - level down   m add class   / picker   n new   ctrl-,/. character"),
+                    ),
             )
-            .children(lines)
+            .child(
+                div()
+                    .w_1_4()
+                    .h_20()
+                    .id("roll-log")
+                    .overflow_y_scroll()
+                    .track_scroll(&self.log_scroll)
+                    .flex()
+                    .flex_col()
+                    .gap_0p5()
+                    .children(lines),
+            )
             .into_any_element()
     }
 
@@ -3070,6 +3182,8 @@ impl Render for SheetView {
             // would otherwise steal keystrokes from the picker's field.
             .key_context(if picker_open {
                 crate::picker::PICKER_CTX
+            } else if self.levelup.is_some() {
+                crate::levelup_view::LEVELUP_CTX
             } else if form_open {
                 crate::form::FORM_CTX
             } else if field_active {
@@ -3096,6 +3210,8 @@ impl Render for SheetView {
             .on_action(cx.listener(Self::on_save))
             .on_action(cx.listener(Self::on_toggle_row))
             .on_action(cx.listener(Self::on_quick_damage))
+            .on_action(cx.listener(Self::on_quick_heal))
+            .on_action(cx.listener(Self::on_restore_slot))
             .on_action(cx.listener(Self::on_cycle_damage_type))
             .on_action(cx.listener(Self::on_roll_death_save))
             .on_action(cx.listener(Self::on_short_rest))
@@ -3339,7 +3455,7 @@ mod tests {
         let (window, root) = open_sheet(cx);
         let view = sheet(cx, &root);
         let pb0 = cx.read(|cx| view.read(cx).doc().character.skills.proficiency_bonus);
-        cx.simulate_keystrokes(window.into(), "equal equal equal equal");
+        cx.simulate_keystrokes(window.into(), "= = = =");
         cx.run_until_parked();
         let (level, pb) = cx.read(|cx| {
             let c = &view.read(cx).doc().character;
@@ -3361,7 +3477,7 @@ mod tests {
         let (window, root) = open_sheet_with(cx, Some(test_corpus()));
         let view = sheet(cx, &root);
         let hp0 = cx.read(|cx| view.read(cx).doc().character.health.max);
-        cx.simulate_keystrokes(window.into(), "equal");
+        cx.simulate_keystrokes(window.into(), "=");
         cx.run_until_parked();
         assert!(
             cx.read(|cx| view.read(cx).levelup.is_some()),
@@ -3400,7 +3516,7 @@ mod tests {
         let (window, root) = open_sheet_with(cx, Some(test_corpus()));
         let view = sheet(cx, &root);
         let hp0 = cx.read(|cx| view.read(cx).doc().character.health.max);
-        cx.simulate_keystrokes(window.into(), "equal r escape");
+        cx.simulate_keystrokes(window.into(), "= r escape");
         cx.run_until_parked();
         cx.read(|cx| {
             let v = view.read(cx);
@@ -3424,12 +3540,12 @@ mod tests {
         let (window, root) = open_sheet_with(cx, Some(test_corpus()));
         let view = sheet(cx, &root);
         // L1 -> L2 (HP, confirm).
-        cx.simulate_keystrokes(window.into(), "equal enter enter");
+        cx.simulate_keystrokes(window.into(), "= enter enter");
         cx.run_until_parked();
         // L2 -> L3: HP enter, subclass step accepts the first option
         // (champion, per the corpus order the engine tests rely on),
         // confirm enter.
-        cx.simulate_keystrokes(window.into(), "equal enter enter enter");
+        cx.simulate_keystrokes(window.into(), "= enter enter enter");
         cx.run_until_parked();
         cx.read(|cx| {
             let c = &view.read(cx).doc().character;
@@ -3445,7 +3561,7 @@ mod tests {
         });
         // L3 -> L4: HP enter; ASI step: row 0 (STR) is selected, two
         // bumps, confirm.
-        cx.simulate_keystrokes(window.into(), "equal enter equal equal enter enter");
+        cx.simulate_keystrokes(window.into(), "= enter = = enter enter");
         cx.run_until_parked();
         cx.read(|cx| {
             let c = &view.read(cx).doc().character;
@@ -3460,13 +3576,13 @@ mod tests {
         let view = sheet(cx, &root);
         // Two quick levels first (no corpus-free path here: the overlay
         // drives everything once a corpus is loaded).
-        cx.simulate_keystrokes(window.into(), "equal enter enter");
+        cx.simulate_keystrokes(window.into(), "= enter enter");
         cx.run_until_parked();
-        cx.simulate_keystrokes(window.into(), "equal enter enter enter");
+        cx.simulate_keystrokes(window.into(), "= enter enter enter");
         cx.run_until_parked();
         // L4: HP enter, ASI step: `f` swaps the ASI for a feat, enter,
         // confirm.
-        cx.simulate_keystrokes(window.into(), "equal enter f enter enter");
+        cx.simulate_keystrokes(window.into(), "= enter f enter enter");
         cx.run_until_parked();
         cx.read(|cx| {
             let v = view.read(cx);
@@ -3661,10 +3777,7 @@ mod tests {
         let view = sheet(cx, &root);
         cx.simulate_keystrokes(window.into(), "]"); // Abilities
         cx.run_until_parked();
-        cx.simulate_keystrokes(
-            window.into(),
-            "equal equal equal equal equal equal equal equal equal",
-        );
+        cx.simulate_keystrokes(window.into(), "= = = = = = = = =");
         cx.run_until_parked();
         let (base, modifier) = cx.read(|cx| {
             let c = &view.read(cx).doc().character;
@@ -3743,6 +3856,53 @@ mod tests {
     }
 
     #[gpui::test]
+    fn f_heals_through_the_amount_field(cx: &mut TestAppContext) {
+        let (window, root) = open_sheet(cx);
+        let view = sheet(cx, &root);
+        let hp0 = cx.read(|cx| view.read(cx).doc().character.health.current);
+        // Take 4 damage first so the heal isn't clamped at max HP.
+        cx.simulate_keystrokes(window.into(), "d 4 enter");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "f 3 enter");
+        cx.run_until_parked();
+        cx.read(|cx| {
+            assert_eq!(view.read(cx).doc().character.health.current, hp0 - 4 + 3);
+        });
+    }
+
+    #[gpui::test]
+    fn z_restores_the_slot_drained_by_the_last_cast(cx: &mut TestAppContext) {
+        use blackletter_types::sheet::meter::Meter;
+        let (window, root) = open_sheet(cx);
+        let view = sheet(cx, &root);
+        // Seed the state a cast leaves behind: one spent slot + the
+        // remembered meter name.
+        view.update(cx, |v, _cx| {
+            v.doc.edit(|c| {
+                c.meters.meters.insert(
+                    "spell_slot_1".into(),
+                    Meter {
+                        name: "spell_slot_1".into(),
+                        slot_number: 1,
+                        spent: 1,
+                        ..Default::default()
+                    },
+                );
+            });
+            v.last_cast_slot = Some("spell_slot_1".into());
+        });
+        cx.simulate_keystrokes(window.into(), "z");
+        cx.run_until_parked();
+        cx.read(|cx| {
+            let c = &view.read(cx).doc().character;
+            assert_eq!(c.meters.meters["spell_slot_1"].spent, 0);
+        });
+        // A second z has nothing to undo but must not panic.
+        cx.simulate_keystrokes(window.into(), "z");
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
     fn dice_tray_rolls_all_kinds(cx: &mut TestAppContext) {
         let (window, root) = open_sheet(cx);
         let view = sheet(cx, &root);
@@ -3761,17 +3921,24 @@ mod tests {
         cx.simulate_keystrokes(window.into(), "v d e x enter");
         cx.run_until_parked();
         let log = cx.read(|cx| view.read(cx).roll_log.clone());
-        assert!(log[0].starts_with("Dex save"), "{log:?}");
+        assert!(
+            log.last().is_some_and(|l| l.starts_with("Dex save")),
+            "{log:?}"
+        );
         // Check by skill prefix.
         cx.simulate_keystrokes(window.into(), "c p e r enter");
         cx.run_until_parked();
         let log = cx.read(|cx| view.read(cx).roll_log.clone());
-        assert!(log[0].starts_with("Perception check"), "{log:?}");
+        assert!(
+            log.last()
+                .is_some_and(|l| l.starts_with("Perception check")),
+            "{log:?}"
+        );
         // Damage expression with a type: resisted/vulnerable/no effect.
         cx.simulate_keystrokes(window.into(), "x 2 d 6 enter");
         cx.run_until_parked();
         let log = cx.read(|cx| view.read(cx).roll_log.clone());
-        assert!(log[0].starts_with("2d6:"), "{log:?}");
+        assert!(log.last().is_some_and(|l| l.starts_with("2d6:")), "{log:?}");
         assert_eq!(log.len(), 4);
     }
 
@@ -3799,7 +3966,7 @@ mod tests {
         });
         assert_eq!(items, vec!["dagger".to_string()]);
         // +/- adjusts quantity; - back to zero removes.
-        cx.simulate_keystrokes(window.into(), "plus");
+        cx.simulate_keystrokes(window.into(), "+");
         cx.run_until_parked();
         assert_eq!(
             cx.read(|cx| view.read(cx).doc().character.inventory.0["dagger"].quantity),
@@ -3809,7 +3976,7 @@ mod tests {
         cx.simulate_keystrokes(window.into(), "space");
         cx.run_until_parked();
         assert!(cx.read(|cx| view.read(cx).doc().character.inventory.0["dagger"].equipped));
-        cx.simulate_keystrokes(window.into(), "minus minus");
+        cx.simulate_keystrokes(window.into(), "- -");
         cx.run_until_parked();
         assert!(cx.read(|cx| view.read(cx).doc().character.inventory.0.is_empty()));
     }
@@ -3924,7 +4091,7 @@ mod tests {
                 .iter()
                 .any(|c| c.kind.to_string() == "Blinded")
         }));
-        cx.simulate_keystrokes(window.into(), "plus plus");
+        cx.simulate_keystrokes(window.into(), "+ +");
         cx.run_until_parked();
         // Two ticks expire it; the third tick would leave nothing to remove.
         cx.simulate_keystrokes(window.into(), "t t");
@@ -3995,7 +4162,7 @@ mod tests {
         cx.run_until_parked();
         cx.simulate_keystrokes(window.into(), "j j j j j j j j j j");
         cx.run_until_parked();
-        cx.simulate_keystrokes(window.into(), "plus");
+        cx.simulate_keystrokes(window.into(), "+");
         cx.run_until_parked();
         assert_eq!(cx.read(|cx| view.read(cx).doc().character.xp), 100);
     }
