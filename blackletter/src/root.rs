@@ -580,9 +580,12 @@ impl Render for RootView {
                     .child(self.tab("Sheet", self.mode == Mode::Sheet, cx))
                     .child(self.tab("Dungeon", self.mode == Mode::Dungeon, cx)),
             )
-            // Center: the active mode's view.
+            // Center: the active mode's view. min_h_0 is load-bearing:
+            // flex items default to min-height:auto (content-sized), so
+            // without it this row grows past the window and the sheet's
+            // scroll viewport never engages at short window heights.
             .child(
-                div().flex_1().flex().bg(gpui::rgb(0x24_24_30)).child(
+                div().flex_1().min_h_0().flex().bg(gpui::rgb(0x24_24_30)).child(
                     match (
                         self.wizard.clone(),
                         self.mode,

@@ -22,8 +22,9 @@ use blackletter_types::{
     skills::Skill,
 };
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable, KeyBinding,
-    SharedString, WeakEntity, Window, actions, div, prelude::*,
+    AnyElement, App, AppContext as _, Context, Entity, FocusHandle, Focusable, InteractiveElement,
+    KeyBinding, SharedString, StatefulInteractiveElement, WeakEntity, Window, actions, div,
+    prelude::*,
 };
 
 pub use doc::SheetDoc;
@@ -243,6 +244,9 @@ pub struct SheetView {
     /// Dice-tray result log, newest first (max 5).
     roll_log: Vec<String>,
     blank: Field,
+    /// Scroll viewport for the center column's section (user ruling
+    /// 2026-11-24: every section tab must scroll at short window heights).
+    scroll: gpui::ScrollHandle,
 }
 
 impl SheetView {
@@ -270,6 +274,7 @@ impl SheetView {
             form: None,
             roll_log: Vec::new(),
             blank: Field::new(""),
+            scroll: gpui::ScrollHandle::new(),
         }
     }
 
@@ -280,6 +285,13 @@ impl SheetView {
     #[allow(dead_code)] // read by tests
     pub fn section(&self) -> Section {
         self.section
+    }
+
+    /// Current vertical scroll offset of the center column (negative =
+    /// scrolled down). Read by the scroll test.
+    #[allow(dead_code)] // read by tests
+    pub fn scroll_offset_y(&self) -> f32 {
+        self.scroll.offset().y.as_f32()
     }
 
     fn report(&self, line: impl Into<SharedString>, cx: &mut Context<Self>) {
@@ -295,12 +307,16 @@ impl SheetView {
     fn on_next_section(&mut self, _: &NextSection, _: &mut Window, cx: &mut Context<Self>) {
         self.section = self.section.next();
         self.sel = 0;
+        // Top strategy (not minimal-scroll): the stale child_bounds from
+        // the outgoing section make a FirstVisible pass a no-op.
+        self.scroll.scroll_to_top_of_item(0);
         cx.notify();
     }
 
     fn on_prev_section(&mut self, _: &PrevSection, _: &mut Window, cx: &mut Context<Self>) {
         self.section = self.section.prev();
         self.sel = 0;
+        self.scroll.scroll_to_top_of_item(0);
         cx.notify();
     }
 
@@ -324,6 +340,7 @@ impl SheetView {
             Section::Basic => self.class_sel = self.class_sel.saturating_sub(1),
             _ => self.sel = self.sel.saturating_sub(1),
         }
+        self.scroll_sel_into_view();
         cx.notify();
     }
 
@@ -347,6 +364,7 @@ impl SheetView {
                 }
             }
         }
+        self.scroll_sel_into_view();
         cx.notify();
     }
 
@@ -1652,6 +1670,48 @@ impl SheetView {
         }
     }
 
+    /// Turn a section's root div into the center column's scroll viewport:
+    /// it takes the space between the field bar and the tray, may shrink
+    /// below its content height, and scrolls (wheel + scroll_to_item).
+    /// The scroll modifiers live on `Stateful<Div>` only, hence the id.
+    /// The handle tracks THIS div's direct children, so `scroll_child`
+    /// must index them, not the logical row numbers.
+    fn scrollable(&self, d: gpui::Div) -> gpui::Stateful<gpui::Div> {
+        d.flex_1()
+            .min_h_0()
+            .id("section-scroll")
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll)
+    }
+
+    /// Child index (within the section root's direct children) of the
+    /// selected row, for ScrollHandle::scroll_to_item.
+    fn scroll_child(&self) -> usize {
+        match self.section {
+            // name, Race, Background, Level, XP, CLASSES header, then class rows.
+            Section::Basic => 6 + self.class_sel,
+            // rows are the first children.
+            Section::Abilities | Section::Features => self.sel,
+            // 18 skills, saves header, 6 saves, profs header, 6 profs.
+            Section::Skills => match self.sel {
+                s if s < 18 => s,
+                s if s < 24 => s + 1,
+                s => s + 2,
+            },
+            // every other section leads with a header line.
+            Section::Combat | Section::Spells | Section::Conditions | Section::Inventory => {
+                self.sel + 1
+            }
+            Section::Notes => 0,
+        }
+    }
+
+    /// Keep the selected row inside the scroll viewport after the
+    /// selection moved (j/k, section switches).
+    fn scroll_sel_into_view(&self) {
+        self.scroll.scroll_to_item(self.scroll_child());
+    }
+
     fn basic_section(&self, cx: &mut Context<Self>) -> AnyElement {
         let c = &self.doc.character;
         let row = |label: &'static str, value: String| {
@@ -1690,7 +1750,7 @@ impl SheetView {
                     ))
             })
             .collect();
-        div()
+        self.scrollable(div())
             .flex()
             .flex_col()
             .gap_2()
@@ -1746,7 +1806,7 @@ impl SheetView {
 
     fn abilities_section(&self, cx: &mut Context<Self>) -> AnyElement {
         let c = &self.doc.character;
-        div()
+        self.scrollable(div())
             .flex()
             .flex_col()
             .gap_1()
@@ -1839,7 +1899,7 @@ impl SheetView {
                 )
             })
             .collect();
-        div()
+        self.scrollable(div())
             .flex()
             .flex_col()
             .gap_0()
@@ -2071,7 +2131,7 @@ impl SheetView {
                     )
                 }),
         );
-        div()
+        self.scrollable(div())
             .flex()
             .flex_col()
             .gap_0()
@@ -2273,7 +2333,7 @@ impl SheetView {
                 cx,
             )
         }));
-        div()
+        self.scrollable(div())
             .flex()
             .flex_col()
             .gap_0()
@@ -2313,7 +2373,7 @@ impl SheetView {
                 self.row(i, format!("{mark} {name}{qty}"), cx)
             })
             .collect();
-        div()
+        self.scrollable(div())
             .flex()
             .flex_col()
             .gap_0()
@@ -2418,7 +2478,7 @@ impl SheetView {
                 self.row(i, text, cx)
             })
             .collect();
-        div()
+        self.scrollable(div())
             .flex()
             .flex_col()
             .gap_0()
@@ -2504,7 +2564,7 @@ impl SheetView {
                     .child("no lore recorded"),
             );
         }
-        div()
+        self.scrollable(div())
             .flex()
             .flex_col()
             .p_2()
@@ -2590,7 +2650,7 @@ impl SheetView {
             })
             .collect();
         let ds = &c.death_saves;
-        div()
+        self.scrollable(div())
             .flex()
             .flex_col()
             .gap_0()
@@ -2779,6 +2839,11 @@ impl Render for SheetView {
                 div()
                     .flex_1()
                     .min_w_0()
+                    // Stretch to the root's height: gpui flex defaults to
+                    // start-alignment on the cross axis, so without this the
+                    // column grows to its content and the section's
+                    // overflow_y_scroll viewport never engages.
+                    .h_full()
                     .overflow_hidden()
                     .flex()
                     .flex_col()
@@ -2928,6 +2993,16 @@ mod tests {
         cx: &mut TestAppContext,
         corpus: Option<Arc<Corpus>>,
     ) -> (WindowHandle<RootView>, Entity<RootView>) {
+        open_sheet_sized(cx, corpus, None)
+    }
+
+    /// `window_size: Some(..)` opens a fixed-size window (layout-sensitive
+    /// tests: the default maximized test window never overflows).
+    fn open_sheet_sized(
+        cx: &mut TestAppContext,
+        corpus: Option<Arc<Corpus>>,
+        window_size: Option<gpui::Size<gpui::Pixels>>,
+    ) -> (WindowHandle<RootView>, Entity<RootView>) {
         cx.update(|cx| {
             cx.bind_keys(crate::root::keybindings());
             cx.bind_keys(keybindings());
@@ -2936,16 +3011,14 @@ mod tests {
             cx.bind_keys(crate::form::form_keys());
             Autosave::init(cx);
         });
-        let window = cx.add_window(|_, cx| {
-            RootView::new(
-                cx,
-                Session::default(),
-                None,
-                corpus,
-                Library::default(),
-                None,
-            )
-        });
+        let window = match window_size {
+            Some(size) => cx.open_window(size, |_, cx| {
+                RootView::new(cx, Session::default(), None, corpus.clone(), Library::default(), None)
+            }),
+            None => cx.add_window(|_, cx| {
+                RootView::new(cx, Session::default(), None, corpus, Library::default(), None)
+            }),
+        };
         window
             .update(cx, |view, window, cx| window.focus(view.focus_handle(), cx))
             .unwrap();
@@ -3428,6 +3501,39 @@ mod tests {
         cx.simulate_keystrokes(window.into(), "plus");
         cx.run_until_parked();
         assert_eq!(cx.read(|cx| view.read(cx).doc().character.xp), 100);
+    }
+
+    #[gpui::test]
+    fn selection_scrolls_into_view(cx: &mut TestAppContext) {
+        // Short window: the Skills list (~34 rows) cannot fit, so the
+        // viewport must follow the selection (user ruling 2026-11-24).
+        let (window, root) =
+            open_sheet_sized(cx, None, Some(gpui::size(gpui::px(900.), gpui::px(420.))));
+        let view = sheet(cx, &root);
+        cx.simulate_keystrokes(window.into(), "] ]"); // Skills & Saves
+        cx.run_until_parked();
+        assert!(
+            cx.read(|cx| view.read(cx).scroll_offset_y()) > -40.,
+            "a fresh section starts at the top (within padding slack)"
+        );
+        // Walk to the first PROFICIENCIES row (24).
+        cx.simulate_keystrokes(
+            window.into(),
+            "j j j j j j j j j j j j j j j j j j j j j j j j",
+        );
+        cx.run_until_parked();
+        assert_eq!(cx.read(|cx| view.read(cx).sel), 24);
+        assert!(
+            cx.read(|cx| view.read(cx).scroll_offset_y()) < 0.,
+            "selection past the viewport bottom must scroll the list"
+        );
+        // Section switches reset the viewport to the top.
+        cx.simulate_keystrokes(window.into(), "]"); // Combat
+        cx.run_until_parked();
+        assert!(
+            cx.read(|cx| view.read(cx).scroll_offset_y()) > -40.,
+            "section switch resets the viewport to the top"
+        );
     }
 
     #[gpui::test]
