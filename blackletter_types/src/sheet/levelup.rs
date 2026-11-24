@@ -126,6 +126,16 @@ pub fn meets_multiclass_prerequisites(
     })
 }
 
+/// Roll the HP gain for a level: (die result, total incl. CON mod).
+/// The CON mod is recovered from `hp_fixed` (half die + 1 + CON).
+#[must_use]
+pub fn roll_hp_gain(plan: &LevelUpPlan) -> (i64, i64) {
+    use rand::RngExt as _;
+    let raw = rand::rng().random_range(1..=plan.hit_die_max);
+    let con_mod = plan.hp_fixed - (plan.hit_die_max / 2 + 1);
+    (raw, (raw + con_mod).max(1))
+}
+
 impl Character {
     /// Add the REDUCED proficiency set granted by multiclassing into a
     /// class (Wiki/03:87 table — e.g. cleric into fighter gains only
@@ -465,5 +475,22 @@ mod tests {
         assert_eq!(p.hp_fixed, 8); // d10/2+1+2
         let p = plan_level_up(&corpus, &ClassType::Wizard, 1, Some(""), 2).unwrap();
         assert_eq!(p.hp_fixed, 6); // d6/2+1+2
+    }
+
+    #[test]
+    fn rolled_hp_stays_in_die_bounds_and_keeps_the_con_mod() {
+        let corpus = corpus();
+        let p = plan_level_up(&corpus, &ClassType::Fighter, 1, Some(""), 2).unwrap();
+        for _ in 0..200 {
+            let (raw, total) = roll_hp_gain(&p);
+            assert!((1..=10).contains(&raw), "d10 out of bounds: {raw}");
+            assert_eq!(total, raw + 2, "CON mod must ride the roll");
+        }
+        // A negative CON mod can't take the gain below 1.
+        let p = plan_level_up(&corpus, &ClassType::Wizard, 1, Some(""), -5).unwrap();
+        for _ in 0..200 {
+            let (raw, total) = roll_hp_gain(&p);
+            assert!(total >= 1, "HP gain floor is 1, got {total} (raw {raw})");
+        }
     }
 }
