@@ -18,6 +18,7 @@ use blackletter_types::{
     database::corpus::Corpus,
     library::Library,
     roll::Advantage,
+    sheet::proficiencies::{ArmorProf, WeaponProf},
     skills::Skill,
 };
 use gpui::{
@@ -185,7 +186,7 @@ const SCORE_ROWS: [Score; 6] = [
 ];
 
 /// The action rows in the Combat section.
-const COMBAT_ROWS: usize = 10;
+const COMBAT_ROWS: usize = 11;
 const COMBAT_LABELS: [&str; COMBAT_ROWS] = [
     "apply damage (amount via d)",
     "heal (amount via enter)",
@@ -197,7 +198,25 @@ const COMBAT_LABELS: [&str; COMBAT_ROWS] = [
     "long rest (space)",
     "spend hit die (space)",
     "roll death save (space)",
+    "xp (+/- by 100)",
 ];
+
+/// The six toggleable proficiency categories (Skills section rows
+/// 24..30); specific/tool proficiencies display below, read-only.
+const PROF_LABELS: [(&str, ProfKind); 6] = [
+    ("light armor", ProfKind::Armor(ArmorProf::Light)),
+    ("medium armor", ProfKind::Armor(ArmorProf::Medium)),
+    ("heavy armor", ProfKind::Armor(ArmorProf::Heavy)),
+    ("shields", ProfKind::Armor(ArmorProf::Shields)),
+    ("simple weapons", ProfKind::Weapon(WeaponProf::Simple)),
+    ("martial weapons", ProfKind::Weapon(WeaponProf::Martial)),
+];
+
+#[derive(Debug, Clone, Copy)]
+enum ProfKind {
+    Armor(ArmorProf),
+    Weapon(WeaponProf),
+}
 
 pub struct SheetView {
     doc: SheetDoc,
@@ -290,7 +309,7 @@ impl SheetView {
         match self.section {
             Section::Basic => self.doc.character.classes.classes.len(),
             Section::Abilities => 6,
-            Section::Skills => 24,
+            Section::Skills => 30,
             Section::Combat => COMBAT_ROWS,
             Section::Spells => self.slot_rows().len() + self.spell_rows().len(),
             Section::Conditions => self.condition_rows(),
@@ -730,6 +749,26 @@ impl SheetView {
                 ),
                 cx,
             );
+        } else if let Some((label, kind)) = PROF_LABELS.get(self.sel.saturating_sub(24)) {
+            let on = self.doc.try_edit(move |c| {
+                match kind {
+                    ProfKind::Armor(a) => c.proficiencies.armor.toggle(*a),
+                    ProfKind::Weapon(w) => c.proficiencies.weapons.toggle(*w),
+                }
+                Ok::<_, ()>(match kind {
+                    ProfKind::Armor(a) => c.proficiencies.armor.contains(*a),
+                    ProfKind::Weapon(w) => c.proficiencies.weapons.contains(*w),
+                })
+            });
+            if let Ok(on) = on {
+                self.report(
+                    format!(
+                        "{label} {}",
+                        if on { "proficient" } else { "not proficient" }
+                    ),
+                    cx,
+                );
+            }
         } else if let Some(score) = SCORE_ROWS.get(self.sel - 18).copied() {
             let now = self.doc.try_edit(move |c| {
                 let flag = match score {
@@ -868,6 +907,22 @@ impl SheetView {
                 let lvl = (self.doc.character.exhaustion as i64 + delta).clamp(0, 6) as u8;
                 self.doc.edit(|c| c.set_exhaustion(lvl));
                 self.report(format!("exhaustion {lvl}"), cx);
+            }
+            10 => {
+                self.doc.edit(|c| {
+                    c.xp = (c.xp + delta * 100).max(0);
+                });
+                let c = &self.doc.character;
+                let hint = if c.xp_ready_to_level() {
+                    format!(
+                        " — enough for level {} (level up when you want)",
+                        c.classes.total_level() + 1
+                    )
+                } else {
+                    c.xp_next_threshold()
+                        .map_or(String::new(), |t| format!(" (next level at {t})"))
+                };
+                self.report(format!("xp {}{}", c.xp, hint), cx);
             }
             _ => self.report("+/- does nothing on this row", cx),
         }
@@ -1653,6 +1708,15 @@ impl SheetView {
                 c.background.as_ref().map_or("—".into(), |b| b.name.clone()),
             ))
             .child(row("Level", c.classes.total_level().to_string()))
+            .child(row("XP", {
+                let mut xp = c.xp.to_string();
+                if c.xp_ready_to_level() {
+                    xp.push_str("  (enough for another level — your call)");
+                } else if let Some(t) = c.xp_next_threshold() {
+                    xp.push_str(&format!("  (next at {t})"));
+                }
+                xp
+            }))
             .child(
                 div()
                     .mt_1()
@@ -1760,6 +1824,21 @@ impl SheetView {
                 )
             })
             .collect();
+        let profs: Vec<_> = PROF_LABELS
+            .iter()
+            .enumerate()
+            .map(|(i, (label, kind))| {
+                let on = match kind {
+                    ProfKind::Armor(a) => c.proficiencies.armor.contains(*a),
+                    ProfKind::Weapon(w) => c.proficiencies.weapons.contains(*w),
+                };
+                self.row(
+                    24 + i,
+                    format!("{} {:<16}", if on { "*" } else { " " }, label),
+                    cx,
+                )
+            })
+            .collect();
         div()
             .flex()
             .flex_col()
@@ -1774,6 +1853,33 @@ impl SheetView {
                     .child("SAVING THROWS"),
             )
             .children(saves)
+            .child(
+                div()
+                    .mt_2()
+                    .text_sm()
+                    .text_color(gpui::rgb(0x6c_70_86))
+                    .child("PROFICIENCIES"),
+            )
+            .children(profs)
+            .child(
+                div()
+                    .mt_1()
+                    .text_sm()
+                    .text_color(gpui::rgb(0x9c_af_c9))
+                    .child(if c.proficiencies.specific.is_empty() {
+                        "specific: —".to_string()
+                    } else {
+                        format!(
+                            "specific: {}",
+                            c.proficiencies
+                                .specific
+                                .iter()
+                                .cloned()
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    }),
+            )
             .child(
                 div()
                     .mt_2()
@@ -3205,11 +3311,13 @@ mod tests {
             (c.death_saves, c.health.current)
         });
         // RNG branches: a pip is recorded; a nat 20 revives (regain 1 HP,
-        // pips reset) or stabilizes — both leave no pips behind, so the
-        // HP bump and `stable` are the accepted alternates (flaky-proof).
+        // pips reset) or stabilizes — both leave no pips behind, so ANY HP
+        // change and `stable` are accepted alternates (flaky-proof). This
+        // sheet is standing (HP > 0), where the engine's nat-20 branch
+        // sets current to 1 — a *drop* — so compare inequality, not >.
         assert!(
-            ds.successes + ds.failures > 0 || ds.stable || hp_after > hp_before,
-            "a save was recorded, a nat 20 revived, or stabilized"
+            ds.successes + ds.failures > 0 || ds.stable || hp_after != hp_before,
+            "a save was recorded, a nat 20 moved HP, or stabilized"
         );
         cx.simulate_keystrokes(window.into(), "S"); // shift-S long rest
         cx.run_until_parked();
@@ -3283,6 +3391,43 @@ mod tests {
                 .conditions
                 .is_empty()
         }));
+    }
+
+    #[gpui::test]
+    fn proficiency_toggles_and_xp_row(cx: &mut TestAppContext) {
+        let (window, root) = open_sheet(cx);
+        let view = sheet(cx, &root);
+        cx.simulate_keystrokes(window.into(), "] ]"); // Skills & Saves
+        cx.run_until_parked();
+        assert_eq!(cx.read(|cx| view.read(cx).section()), Section::Skills);
+        // Walk to the first PROFICIENCIES row (24).
+        cx.simulate_keystrokes(
+            window.into(),
+            "j j j j j j j j j j j j j j j j j j j j j j j j",
+        );
+        cx.run_until_parked();
+        assert_eq!(cx.read(|cx| view.read(cx).sel), 24);
+        cx.simulate_keystrokes(window.into(), "space");
+        cx.run_until_parked();
+        assert!(
+            cx.read(|cx| {
+                view.read(cx)
+                    .doc()
+                    .character
+                    .proficiencies
+                    .armor
+                    .contains(ArmorProf::Light)
+            }),
+            "space toggles light armor on"
+        );
+        // XP row lives at the bottom of Combat.
+        cx.simulate_keystrokes(window.into(), "]"); // Combat
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "j j j j j j j j j j");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "plus");
+        cx.run_until_parked();
+        assert_eq!(cx.read(|cx| view.read(cx).doc().character.xp), 100);
     }
 
     #[gpui::test]
