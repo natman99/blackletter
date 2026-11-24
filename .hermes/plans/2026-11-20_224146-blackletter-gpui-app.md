@@ -221,6 +221,35 @@ in every picker/flow from then on.
   a caller that inserts the result into `Library` + saves. Parked until after
   Phase 5; the Library is its landing zone.
 
+### Task 4.4 — Custom-content deepening roadmap (user asked for the path 2026-11-24)
+Current state: Library holds spells/items/feats/races/backgrounds/features/traits;
+pickers merge both sources everywhere (sheet AND wizard); in-app forms cover only
+the flat end (spells without structured damage/DC, items without weapon mechanics,
+feats as text-only). The data model is deep; the forms are shallow. The schema
+types already round-trip structured damage, DCs, damage-at-slot-level, weapon
+properties etc. — the gap is form UI + parsing, not engine. Ordered by cheapness:
+- **4.4a JSON import action** (cheap bridge, do first): `library.json` is plain
+  serde JSON with full schema fidelity — hand-written mechanically-complete
+  entries already load. Add "import from JSON file" (single entry or array) so
+  power users and later scrapers get full-depth content without form UI. This is
+  also the missing tail the deferred scraper needs.
+- **4.4b Deepen the forms**: structured damage/DC/attack-type/components/ritual
+  for spells; category/damage/properties for items. Mostly `form_specs` + parse
+  in `on_form`; no engine work.
+- **4.4c Mechanical custom feats/features**: custom feat entries that actually
+  grant (proficiencies, bumps) via the same grant paths SRD feats use
+  (`gain_multiclass_proficiencies`-style seams), not just text.
+- **4.4d Structured race/background editors** (fill the intentionally-refused
+  flat forms): nested trait refs, ability bonuses, proficiency grants — the
+  engine already models all of this for SRD entities.
+- **4.4e Custom classes** (the real gap): add `classes` to the Library + a class
+  editor (HD, PB, proficiencies, features-by-level, spellcasting table). AFTER
+  5.2: the level-up wizard makes class-by-level structure first-class, and the
+  engine already treats classes uniformly, so homebrew classes + homebrew
+  multiclassing then come free. Scraping stays deferred (see 4.3 note).
+- Sequencing note (checked before starting 5.2): 5.2 creates no debt against
+  this roadmap — 4.4a–d are orthogonal, and 4.4e consumes 5.2's structures.
+
 ## Phase 5 — Character creation wizard + level-up
 
 ### Task 5.1 — New-character wizard — DONE (2026-11-23)
@@ -241,6 +270,10 @@ in every picker/flow from then on.
 - Engine gaps to fill in `blackletter_types` first (with tests): class starting-features lookup from database, equipment-option choice parsing, skill-choice validation (class list × background skills). Flag each gap as its own commit.
 
 ### Task 5.2 — Level-up flow
+- CROSS-TIE (2026-11-24): 5.2's class-by-level structures are what Task 4.4e
+  (custom classes) will consume — keep Levels.json driving generic enough for
+  Library-sourced classes (resolve class defs through one seam, not hardcoded
+  SRD lookups, where cheap to do).
 - From sheet mode: "Level Up" action → per-level steps driven by `5e-SRD-Levels.json` (feature/spell grants per class × subclass × level): HP gain (roll / fixed / level-1 max−1 rules per PHB), subclass choice at the class's subclass level, feat at ASI levels (SRD feats picker), ability bumps. Multiclass: "Add Class" action runs the wizard's class steps minus scores.
 - Tests: level 1→20 fighter ends with exactly the PHB feature list (assert against `Wiki/02 classes.md` lines AND the Levels.json grant set — they must agree); warlock gets Pact slots per the corrected PHB table; cleric level 1 starts with prepared list = all cleric spells (2014 prepared rule).
 - ENGINE NOTE (2026-11-23, multiclass hardening): the engine side is pre-built — `meets_multiclass_prerequisites`, `gain_multiclass_proficiencies` (reduced Wiki/03:87 set), per-class `spellcasting_ability` + per-spell `casting_ability` override, `extra_attacks()` (strongest-wins), XP tracked-but-never-enforced (`xp_ready_to_level` is a suggestion; never auto-level, never nag about low XP). The rogue-session levelup engine (6a58cfe) is kept and resyncs PB+slots; its UI slice is in stash@{0} and should be rebuilt on these primitives.
