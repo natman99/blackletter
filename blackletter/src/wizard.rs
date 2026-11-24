@@ -27,8 +27,8 @@ use blackletter_types::{
     },
 };
 use gpui::{
-    App, Context, Entity, FocusHandle, Focusable, KeyBinding, Render, SharedString, Window,
-    actions, div, prelude::*,
+    App, Context, Entity, FocusHandle, Focusable, KeyBinding, Render, ScrollHandle, SharedString,
+    Window, actions, div, prelude::*,
 };
 
 use crate::field::{Field, FieldCancel, FieldElement, FieldOwner, FieldSubmit};
@@ -211,6 +211,8 @@ pub struct WizardView {
     status: Option<SharedString>,
     focus_handle: FocusHandle,
     on_finish: Option<FinishFn>,
+    /// Viewport for the step's scrollable row list (short windows).
+    scroll: ScrollHandle,
 }
 
 impl WizardView {
@@ -241,6 +243,7 @@ impl WizardView {
             status: None,
             focus_handle: cx.focus_handle(),
             on_finish: Some(Box::new(on_finish)),
+            scroll: ScrollHandle::new(),
         };
         me.say("start with a name — enter continues", cx);
         me
@@ -301,6 +304,7 @@ impl WizardView {
         if self.idx + 1 < self.steps.len() {
             self.idx += 1;
             self.sel = 0;
+            self.scroll.scroll_to_top_of_item(0);
             self.enter_step(window, cx);
         }
     }
@@ -311,6 +315,7 @@ impl WizardView {
         if self.idx > 0 {
             self.idx -= 1;
             self.sel = 0;
+            self.scroll.scroll_to_top_of_item(0);
             self.enter_step(window, cx);
         }
     }
@@ -322,6 +327,22 @@ impl WizardView {
     /// after the first picker closed).
     fn focus_self(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus_handle, cx);
+    }
+
+    /// The step's row list becomes a scroll viewport at short window
+    /// heights (same pattern as the sheet sections, Task ruling
+    /// 2026-11-24). One tracked div per frame: only one step renders.
+    fn scrollable(&self, d: gpui::Div) -> gpui::Stateful<gpui::Div> {
+        d.flex_1()
+            .min_h_0()
+            .id("wizard-scroll")
+            .overflow_y_scroll()
+            .track_scroll(&self.scroll)
+    }
+
+    #[cfg(test)] // the scroll regression test's window into the viewport
+    pub fn scroll_offset_y(&self) -> f32 {
+        self.scroll.offset().y.as_f32()
     }
 
     /// Side effects on entering a step: picker steps open their picker.
@@ -532,6 +553,7 @@ impl WizardView {
         let next = (self.sel as isize + dir).clamp(0, last as isize) as usize;
         if next != self.sel {
             self.sel = next;
+            self.scroll.scroll_to_item(next);
             cx.notify();
         }
     }
@@ -1204,6 +1226,8 @@ impl Render for WizardView {
                     })
                     .collect();
                 div()
+                    .flex_1()
+                    .min_h_0()
                     .flex()
                     .flex_col()
                     .gap_1()
@@ -1214,7 +1238,7 @@ impl Render for WizardView {
                             .text_color(gpui::rgb(0x8a_90_b0))
                             .child(format!("pool: {pool_s}")),
                     )
-                    .child(div().flex().flex_col().children(rows))
+                    .child(self.scrollable(div()).children(rows))
             }
             Step::Choice(i) => {
                 let opts = self.pending_options();
@@ -1257,6 +1281,8 @@ impl Render for WizardView {
                     })
                     .collect();
                 div()
+                    .flex_1()
+                    .min_h_0()
                     .flex()
                     .flex_col()
                     .gap_1()
@@ -1270,7 +1296,7 @@ impl Render for WizardView {
                                 opt.choose
                             )),
                     )
-                    .child(div().flex().flex_col().children(rows))
+                    .child(self.scrollable(div()).children(rows))
             }
             Step::Confirm => {
                 let lines = summary(&self.corpus, &self.draft);
@@ -1284,6 +1310,8 @@ impl Render for WizardView {
                         .child(format!("still needed: {}", missing.join(" · ")))
                 };
                 div()
+                    .flex_1()
+                    .min_h_0()
                     .flex()
                     .flex_col()
                     .gap_1()
@@ -1294,10 +1322,9 @@ impl Render for WizardView {
                     }))
                     .child(gate)
                     .child(
-                        div()
-                            .flex()
-                            .flex_col()
-                            .children(lines.into_iter().map(|l| div().text_sm().child(l))),
+                        self.scrollable(div()).children(
+                            lines.into_iter().map(|l| div().text_sm().child(l)),
+                        ),
                     )
             }
         };
@@ -1456,7 +1483,15 @@ impl Render for WizardView {
                     .w(gpui::px(150.))
                     .children(rail),
             )
-            .child(div().flex_1().flex().flex_col().gap_2().child(body))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(body),
+            )
             .child(
                 div()
                     .absolute()
@@ -1866,5 +1901,119 @@ mod tests {
         d.scores[3] = None;
         let e = build_character(&corpus, &d).unwrap_err().to_string();
         assert!(e.contains("six scores"), "{e}");
+    }
+
+    /// Live bug (2026-11-24): after closing the wizard early the keyboard
+    /// was dead until a mouse click. gpui clears window focus when the
+    /// focused entity is dropped, so the sheet must reclaim it before the
+    /// wizard is released.
+    #[gpui::test]
+    fn cancelling_the_wizard_hands_keyboard_focus_back_to_the_sheet(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use crate::autosave::Autosave;
+        use crate::session::Session;
+        cx.update(|cx| {
+            cx.bind_keys(crate::root::keybindings());
+            cx.bind_keys(crate::sheet_view::keybindings());
+            cx.bind_keys(crate::field::field_keys(crate::dungeon_view::FIELD_CTX));
+            cx.bind_keys(crate::picker::picker_keys());
+            cx.bind_keys(crate::form::form_keys());
+            cx.bind_keys(wizard_keys());
+            Autosave::init(cx);
+        });
+        let window = cx.add_window(|_, cx| {
+            crate::root::RootView::new(
+                cx,
+                Session::default(),
+                None,
+                Some(test_corpus()),
+                Library::default(),
+                None,
+            )
+        });
+        window
+            .update(cx, |view, window, cx| window.focus(view.focus_handle(), cx))
+            .unwrap();
+        cx.simulate_keystrokes(window.into(), "ctrl-shift-n");
+        cx.run_until_parked();
+        // Name step: escape is the field's cancel, not the wizard's.
+        // Walk to the race step (picker open), then escape closes the
+        // picker, escape cancels the wizard.
+        cx.simulate_keystrokes(window.into(), "T enter");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "escape escape");
+        cx.run_until_parked();
+        let root = window.root(cx).unwrap();
+        assert!(
+            root.read_with(cx, |r, _| r.wizard().is_none()),
+            "wizard closed"
+        );
+        // The keyboard must work on the sheet with no mouse click:
+        // `]` advances the sheet's section.
+        cx.simulate_keystrokes(window.into(), "]");
+        cx.run_until_parked();
+        let sheet = root
+            .read_with(cx, |r, _| r.sheet_view().cloned())
+            .expect("sheet view built by the cancel path");
+        assert_ne!(
+            sheet.read_with(cx, |s, _| s.section()),
+            crate::sheet_view::Section::Basic,
+            "`]` reached the sheet after the wizard closed"
+        );
+    }
+
+    /// Scroll ruling (2026-11-24): wizard row lists scroll in short
+    /// windows and j/k keep the selection in view, like the sheet.
+    #[gpui::test]
+    fn the_wizard_row_list_scrolls_in_a_short_window(cx: &mut gpui::TestAppContext) {
+        use crate::autosave::Autosave;
+        use crate::session::Session;
+        cx.update(|cx| {
+            cx.bind_keys(crate::root::keybindings());
+            cx.bind_keys(crate::sheet_view::keybindings());
+            cx.bind_keys(crate::field::field_keys(crate::dungeon_view::FIELD_CTX));
+            cx.bind_keys(crate::picker::picker_keys());
+            cx.bind_keys(crate::form::form_keys());
+            cx.bind_keys(wizard_keys());
+            Autosave::init(cx);
+        });
+        let window = cx.open_window(gpui::size(gpui::px(900.), gpui::px(160.)), |_, cx| {
+            crate::root::RootView::new(
+                cx,
+                Session::default(),
+                None,
+                Some(test_corpus()),
+                Library::default(),
+                None,
+            )
+        });
+        window
+            .update(cx, |view, window, cx| window.focus(view.focus_handle(), cx))
+            .unwrap();
+        cx.simulate_keystrokes(window.into(), "ctrl-shift-n");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "T enter");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "e l f enter");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "enter"); // first elf subrace
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "w i z enter");
+        cx.run_until_parked();
+        cx.simulate_keystrokes(window.into(), "a c o enter");
+        cx.run_until_parked();
+        let root = window.root(cx).unwrap();
+        let wiz = root
+            .read_with(cx, |r, _| r.wizard().cloned())
+            .expect("wizard open");
+        assert_eq!(wiz.read_with(cx, |w, _| w.step()), Step::Scores);
+        cx.simulate_keystrokes(window.into(), "j j j j j");
+        cx.run_until_parked();
+        assert_eq!(wiz.read_with(cx, |w, _| w.sel), 5);
+        assert!(
+            wiz.read_with(cx, |w, _| w.scroll_offset_y()) < 0.,
+            "the score rows scrolled to keep the selection in view"
+        );
     }
 }

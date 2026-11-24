@@ -236,9 +236,30 @@ impl RootView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.wizard = None;
         let crate::wizard::WizardOutcome::Finished(character) = outcome else {
             self.set_status("wizard cancelled", cx);
+            // The wizard holds window focus, and gpui clears focus when
+            // the focused entity is dropped (the drop lands after this
+            // update frame — reclaiming afterwards loses to it). Hand
+            // focus to the active view *before* releasing the wizard
+            // (live bug: keyboard dead after cancelling the wizard until
+            // a mouse click).
+            match self.mode {
+                Mode::Sheet => {
+                    self.ensure_sheet(window, cx);
+                    if let Some(view) = self.sheet.clone() {
+                        window.focus(&view.read(cx).focus_handle(cx), cx);
+                    }
+                }
+                Mode::Dungeon => {
+                    self.ensure_dungeon(window, cx);
+                    if let Some(view) = self.dungeon.clone() {
+                        window.focus(&view.read(cx).focus_handle(cx), cx);
+                    }
+                }
+            }
+            self.wizard = None;
+            cx.notify();
             return;
         };
         let name = character.name.clone();
@@ -270,7 +291,10 @@ impl RootView {
         self.session.mode = StoredMode::Sheet;
         self.save_session();
         let view = self.open_doc(doc, dir, cx);
+        // Focus before releasing the wizard (see the cancel-branch note:
+        // dropping the focused entity clears focus after the frame).
         window.focus(&view.read(cx).focus_handle(cx), cx);
+        self.wizard = None;
         cx.notify();
     }
 
