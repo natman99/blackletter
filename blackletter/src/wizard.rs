@@ -803,6 +803,12 @@ pub fn build_character(corpus: &Corpus, draft: &Draft) -> anyhow::Result<Charact
         }
     }
 
+    // Typed weapon/armor/tool proficiencies from the class row
+    // (skill-* and saving-throw-* entries are skipped by add_index).
+    for prof in &class_db.proficiencies {
+        c.proficiencies.add_index(&prof.index);
+    }
+
     // Background grant + its skill proficiencies (bitflags are the sheet's
     // proficiency truth; the grant carries the fiction).
     let bg_db = corpus.background(bi).ctx_missing("background", bi)?;
@@ -1639,6 +1645,13 @@ mod tests {
         assert_eq!(c.health.max, 8, "hp {}", c.health.max);
         // The class row's spellcasting ability landed on the sheet class.
         assert_eq!(c.classes.classes[0].spellcasting_ability, Some(Score::Int));
+        // Wizard proficiencies: no armor, no weapons, hand crossbow
+        // (from the fixed equipment package? no — from class row: none).
+        // SRD wizard class proficiencies are only the two saves + skills.
+        assert!(
+            c.proficiencies.armor.is_empty() && c.proficiencies.weapons.is_empty(),
+            "wizard gets no armor/weapon proficiencies"
+        );
         // Class saving-throw proficiencies landed (wizard: INT + WIS).
         assert!(c.saving_throws.int && c.saving_throws.wis);
         assert!(!c.saving_throws.str);

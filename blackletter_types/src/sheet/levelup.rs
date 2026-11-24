@@ -127,6 +127,16 @@ pub fn meets_multiclass_prerequisites(
 }
 
 impl Character {
+    /// Add the REDUCED proficiency set granted by multiclassing into a
+    /// class (Wiki/03:87 table — e.g. cleric into fighter gains only
+    /// light/medium armor + shields, not martial weapons). Used by the
+    /// Add Class flow; idempotent.
+    pub fn gain_multiclass_proficiencies(&mut self, mc: &crate::database::class::MultiClassing) {
+        for prof in &mc.proficiencies {
+            self.proficiencies.add_index(&prof.index);
+        }
+    }
+
     /// Apply a level-up plan. `hp_gain` is the rolled or fixed amount
     /// (caller decides; `plan.hp_fixed` is the fixed option). `asi`
     /// distributes ASI points onto score bases (PHB: 2 to one or 1+1).

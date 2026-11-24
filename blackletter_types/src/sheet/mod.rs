@@ -31,6 +31,7 @@ pub mod language;
 pub mod levelup;
 pub mod lore;
 pub mod meter;
+pub mod proficiencies;
 pub mod race;
 pub mod saving_throws;
 pub mod senses;
@@ -83,6 +84,15 @@ pub struct Character {
     pub ability_scores: AbilityScores,
     pub skills: Skills,
     pub saving_throws: SavingThrows,
+    /// Typed weapon/armor/tool proficiencies (skills and saves have
+    /// their own fields). `specific` is the homebrew seam — free-form.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub proficiencies: proficiencies::Proficiencies,
+    /// Experience points. TRACKED, NOT ENFORCED (user ruling): the sheet
+    /// suggests level-ups from the SRD advancement table but never forces
+    /// one, and a low XP total for the level is fine (XP-less tables).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub xp: i64,
     pub spells: Spells,
     pub senses: Senses,
     pub features: Features,
@@ -148,6 +158,8 @@ impl Character {
                 }],
             },
             skills: Skills::default(),
+            proficiencies: Default::default(),
+            xp: 0,
             inventory: Default::default(),
             spells: Default::default(),
             senses: Default::default(),
@@ -233,6 +245,58 @@ impl Character {
     #[must_use]
     pub fn spell_attack_bonus(&self, spell: &crate::spells::Spell) -> i64 {
         self.skills.proficiency_bonus + self.ability_modifier_for(self.spell_ability(spell))
+    }
+
+    /// SRD Character Advancement table (`Wiki/03:16-37`): total XP
+    /// required to REACH a level. `None` past level 20.
+    #[must_use]
+    pub fn xp_for_level(level: i64) -> Option<i64> {
+        const TABLE: [i64; 20] = [
+            0, 300, 900, 2_700, 6_500, 14_000, 23_000, 34_000, 48_000, 64_000, 85_000, 100_000,
+            120_000, 140_000, 165_000, 195_000, 225_000, 265_000, 305_000, 355_000,
+        ];
+        TABLE
+            .get((level - 1).try_into().unwrap_or(usize::MAX))
+            .copied()
+    }
+
+    /// XP needed to reach the next level, or `None` at level 20.
+    #[must_use]
+    pub fn xp_next_threshold(&self) -> Option<i64> {
+        Self::xp_for_level(self.classes.total_level() + 1)
+    }
+
+    /// Suggestion only: enough XP banked for the next level. The sheet
+    /// displays this; it never auto-levels (user ruling — many tables
+    /// don't track XP at all, and a low total is not an error).
+    #[must_use]
+    pub fn xp_ready_to_level(&self) -> bool {
+        self.xp_next_threshold().is_some_and(|t| self.xp >= t)
+    }
+
+    /// Extra attacks beyond the first, from the Extra Attack feature.
+    /// SRD multiclassing (`Wiki/03:114`): versions from different classes
+    /// DO NOT stack — "You can't make more than two attacks with this
+    /// feature unless it says you do (as the fighter's version ...
+    /// does)". So the strongest single source wins: fighter scales
+    /// 5th->+1, 11th->+2, 20th->+3; every other class that grants the
+    /// feature caps at +1.
+    #[must_use]
+    pub fn extra_attacks(&self) -> usize {
+        let mut best = 0usize;
+        for cl in &self.classes.classes {
+            let n = match cl.class {
+                ClassType::Fighter => match cl.level.0 {
+                    l if l >= 20 => 3,
+                    l if l >= 11 => 2,
+                    l if l >= 5 => 1,
+                    _ => 0,
+                },
+                _ => usize::from(self.has_grant("Extra Attack")),
+            };
+            best = best.max(n);
+        }
+        best
     }
 
     pub fn initiative(&self) -> i64 {
@@ -1047,6 +1111,8 @@ impl Default for Character {
             ability_scores: Default::default(),
             skills: Default::default(),
             saving_throws: Default::default(),
+            proficiencies: Default::default(),
+            xp: 0,
             spells: Default::default(),
             senses: Default::default(),
             features: Default::default(),
@@ -1923,6 +1989,56 @@ mod tests {
             class,
             AbilityScores::default(),
         )
+    }
+
+    #[test]
+    fn xp_advancement_table_matches_srd_and_only_suggests() {
+        // Wiki/03:16-37 anchors.
+        assert_eq!(Character::xp_for_level(1), Some(0));
+        assert_eq!(Character::xp_for_level(5), Some(6_500));
+        assert_eq!(Character::xp_for_level(20), Some(355_000));
+        assert_eq!(Character::xp_for_level(21), None);
+        let mut c = leveled(ClassType::Wizard, 4);
+        assert_eq!(c.xp_next_threshold(), Some(6_500));
+        assert!(!c.xp_ready_to_level(), "0 XP never nags");
+        c.xp = 6_499;
+        assert!(!c.xp_ready_to_level());
+        c.xp = 6_500;
+        assert!(c.xp_ready_to_level(), "suggestion only — no auto-level");
+        // XP below the level's threshold is legal (XP-less tables).
+        c.xp = 0;
+        assert_eq!(c.classes.total_level(), 4, "no enforcement either way");
+    }
+
+    #[test]
+    fn extra_attack_does_not_stack_strongest_wins() {
+        // Wiki/03:114: versions don't add together; fighter's does.
+        let mut c = leveled(ClassType::Fighter, 4);
+        assert_eq!(c.extra_attacks(), 0);
+        c.classes.classes[0].level = Level(5);
+        assert_eq!(c.extra_attacks(), 1);
+        c.classes.classes[0].level = Level(11);
+        assert_eq!(c.extra_attacks(), 2);
+        c.classes.classes[0].level = Level(20);
+        assert_eq!(c.extra_attacks(), 3);
+        // Fighter 5 / rogue 5: rogue's Extra Attack grant exists but
+        // must NOT add — strongest source wins.
+        let mut multi = leveled(ClassType::Fighter, 5);
+        multi.classes.classes.push(Class {
+            class: ClassType::Rogue,
+            spellcasting_ability: None,
+            level: Level(5),
+            hit_dice: ClassType::Rogue.get_hit_dice(),
+            health_bonus_per_level: 0,
+            healing_die_remaining: 5,
+            subclass: String::new(),
+            max_healing_die: 5,
+        });
+        multi.add_feature(Feature {
+            name: "Extra Attack".into(),
+            ..Default::default()
+        });
+        assert_eq!(multi.extra_attacks(), 1, "no stacking");
     }
 
     #[test]

@@ -156,7 +156,9 @@ impl Default for Class {
             hit_dice,
             health_bonus_per_level: 0,
             healing_die_remaining: 1,
-            subclass: "Battlemaster".to_string(),
+            // No subclass: a default sheet claiming "Battlemaster" was
+            // junk; subclass is chosen (or left empty) by the player.
+            subclass: String::new(),
             max_healing_die: 1,
         }
     }

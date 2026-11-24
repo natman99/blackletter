@@ -112,6 +112,10 @@ impl Interface {
             ability_scores,
             skills,
             saving_throws,
+            // No Rhai CustomType for Proficiencies yet; scripts read xp
+            // but not the typed proficiency sets.
+            proficiencies: _proficiencies,
+            xp,
             spells,
             senses,
             features,
@@ -140,6 +144,7 @@ impl Interface {
             None => scope.push("race", ()),
         };
         scope.push("gold", gold);
+        scope.push("xp", xp);
         scope.push("classes", classes);
         scope.push("initiative", initiative);
         match armor_class {
@@ -211,6 +216,10 @@ impl Interface {
             ability_scores,
             skills,
             saving_throws,
+            // No Rhai CustomType for Proficiencies yet; scripts read xp
+            // but not the typed proficiency sets.
+            proficiencies: _proficiencies,
+            xp,
             spells,
             senses,
             features,
@@ -246,6 +255,7 @@ impl Interface {
             None => scope.push("race", ()),
         };
         scope.push("gold", gold);
+        scope.push("xp", xp);
         scope.push("classes", classes);
         scope.push("initiative", initiative);
         match armor_class {
@@ -318,6 +328,7 @@ impl Interface {
         let name = extract!("name", "name")?;
         let race = extract_opt!("race", "race", blackletter_types::race::Race)?;
         let gold = extract!("gold", "gold")?;
+        let xp = extract_opt!("xp", "xp", i64)?;
         let classes = extract!("classes", "classes")?;
         let initiative = extract!("initiative", "initiative")?;
         let armor_class = ArmorClass {
@@ -376,6 +387,8 @@ impl Interface {
             languages,
             conditions,
             saving_throws,
+            proficiencies: Default::default(),
+            xp: xp.unwrap_or(0),
             death_saves,
             exhaustion,
             spell_slots_override,
