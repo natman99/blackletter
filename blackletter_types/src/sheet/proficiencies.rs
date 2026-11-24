@@ -55,6 +55,7 @@ pub struct Proficiencies {
 /// skills.rs): the agent-facing schema shows plain string lists.
 #[cfg(feature = "schema")]
 #[derive(JsonSchema)]
+#[allow(dead_code)] // schema-only shadow: fields shape the JSON schema, never read
 struct ProficienciesSchema {
     armor: Vec<String>,
     weapons: Vec<String>,
