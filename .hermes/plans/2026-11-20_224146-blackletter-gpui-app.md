@@ -243,6 +243,8 @@ in every picker/flow from then on.
 ### Task 5.2 — Level-up flow
 - From sheet mode: "Level Up" action → per-level steps driven by `5e-SRD-Levels.json` (feature/spell grants per class × subclass × level): HP gain (roll / fixed / level-1 max−1 rules per PHB), subclass choice at the class's subclass level, feat at ASI levels (SRD feats picker), ability bumps. Multiclass: "Add Class" action runs the wizard's class steps minus scores.
 - Tests: level 1→20 fighter ends with exactly the PHB feature list (assert against `Wiki/02 classes.md` lines AND the Levels.json grant set — they must agree); warlock gets Pact slots per the corrected PHB table; cleric level 1 starts with prepared list = all cleric spells (2014 prepared rule).
+- ENGINE NOTE (2026-11-23, multiclass hardening): the engine side is pre-built — `meets_multiclass_prerequisites`, `gain_multiclass_proficiencies` (reduced Wiki/03:87 set), per-class `spellcasting_ability` + per-spell `casting_ability` override, `extra_attacks()` (strongest-wins), XP tracked-but-never-enforced (`xp_ready_to_level` is a suggestion; never auto-level, never nag about low XP). The rogue-session levelup engine (6a58cfe) is kept and resyncs PB+slots; its UI slice is in stash@{0} and should be rebuilt on these primitives.
+- DEFERRED (user 2026-11-23, "do your best when it comes up"): per-class spellcasting MECHANICS — `casting_mechanic` is currently first-casting-class-wins; SRD wants prepare/spontaneous and known/prepared lists tracked PER CLASS independently (Wiki/03:122-136). Fold into 5.2's Add Class: spell provenance (which sheet class each spell belongs to) + per-class prep model.
 
 ---
 
